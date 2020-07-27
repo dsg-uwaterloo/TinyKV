@@ -54,9 +54,10 @@ func (r *Raft) processHeartBeatRequest(req *ReqHeartbeat, resp *RspHeartbeat) {
 		//同一term不可能有两个leader.
 		log.Fatalf("logic error:state is leader")
 	}
+	r.Lead = req.LeaderId
 	//2.如果日志在 prevLogIndex 位置处的日志条目的任期号和 prevLogTerm 不匹配，则返回 false （5.3 节）
 	//2.0 如果是带过来prev是空（0），那么表示ok。
-	if req.PrevLogTerm == 0 {
+	if req.PrevLogIndex == 0 {
 		resp.Success = true
 		return
 	}
@@ -124,7 +125,7 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 	var req ReqHeartbeat
 	req.fromPbMsg(m)
 	var resp RspHeartbeat
-	log.Debugf("'%d->%d'(%v):%v", m.GetFrom(), m.GetTo(), m.GetMsgType(), req)
+	log.Debugf("handleHeartbeat '%d->%d'(%v):%v", m.GetFrom(), m.GetTo(), m.GetMsgType(), req)
 	//
 	r.processHeartBeatRequest(&req, &resp)
 	if false == resp.Success {
@@ -133,7 +134,7 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 	//3.如果已经存在的日志条目和新的产生冲突（索引值相同但是任期号不同），删除这一条和之后所有的 （5.3 节）
 	//4.附加日志中尚未存在的任何新条目
 	//5.如果 leaderCommit > commitIndex，令 commitIndex 等于 leaderCommit 和 新日志条目索引值中较小的一个
-	cidx := req.LeaderCommitId
+	cidx := min(req.LeaderCommitId, req.PrevLogIndex)
 	if cidx > r.RaftLog.committed {
 		r.RaftLog.committed = cidx
 	}
@@ -145,7 +146,7 @@ func (r *Raft) onHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
 	var resp RspHeartbeat
 	resp.fromPbMsg(m)
-	log.Debugf("'%d->%d':%+v", m.GetFrom(), m.GetTo(), resp)
+	log.Debugf("onHeartbeat '%d->%d':%+v", m.GetFrom(), m.GetTo(), resp)
 	//失败处理.
 	if false == resp.Success {
 		r.onHeartbeatsFailed(m.GetFrom(), &resp, r.sendHeartbeat)
@@ -162,7 +163,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 
 	//for log
 	req.Entries = nil
-	log.Debugf("'%d->%d'(%v):%+v(ents=%d)", m.GetFrom(), m.GetTo(), m.GetMsgType(), req, len(m.GetEntries()))
+	log.Debugf("handleAppendEntries '%d->%d'(%v):%+v(ents=%d)", m.GetFrom(), m.GetTo(), m.GetMsgType(), req, len(m.GetEntries()))
 	req.Entries = m.GetEntries()
 
 	var resp RspAppend
@@ -179,22 +180,19 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		r.send(m.GetFrom(), &resp)
 		return
 	}
-	//5.如果 leaderCommit > commitIndex，令 commitIndex 等于 leaderCommit 和 新日志条目索引值中较小的一个
-	//leaderCommit和 新日志中最大index比较 ，取小都
-	//	场景1：后续追日志，leader直接告诉follower已经commit都index就可以了，这个commitindex可以说新日志中都index；
-	//	场景2：但是，可能最大都日志都index都不如leaderCommit大，那么就只能用最大都index。
-	cidx := req.LeaderCommitId
-	if len(req.Entries) > 0 {
-		lastEntry := req.Entries[len(req.Entries)-1]
-		cidx = min(lastEntry.Index, cidx)
+	resp.LastLogIndex = req.PrevLogIndex + uint64(len(req.Entries))
+	if resp.LastLogIndex > r.RaftLog.LastIndex() {
+		log.Warnf("resp.LastLogIndex<%d> != r.RaftLog.LastIndex()<%d>", resp.LastLogIndex, r.RaftLog.LastIndex())
 	}
+	//5.如果 leaderCommit > commitIndex，令 commitIndex 等于 leaderCommit 和 新日志条目索引值中较小的一个
+	//	raftLog.entries 比 req.entries 日志多，并且没有冲突的话,那么resp.LastLogIndex < raftLog.entries的.
+	//	但是，commit以leader给的日志为准，所以是resp的最大日志（prevLogIndex + len(req.entries)计算）.
+	cidx := min(resp.LastLogIndex, req.LeaderCommitId)
+	log.Debugf("set commit=%d", cidx)
 	if cidx > r.RaftLog.committed {
 		r.RaftLog.committed = cidx
 	}
-	resp.LastLogIndex = req.PrevLogIndex + uint64(len(req.Entries))
-	if resp.LastLogIndex != r.RaftLog.LastIndex() {
-		log.Warnf("resp.LastLogIndex<%d> != r.RaftLog.LastIndex()<%d>", resp.LastLogIndex, r.RaftLog.LastIndex())
-	}
+
 	r.send(m.GetFrom(), &resp)
 }
 
@@ -203,7 +201,7 @@ func (r *Raft) onAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
 	var resp RspAppend
 	resp.fromPbMsg(m)
-	log.Debugf("'%d->%d'(%v):%+v", m.GetFrom(), m.GetTo(), m.GetMsgType(), resp)
+	log.Debugf("onAppendEntries '%d->%d'(%v):%+v", m.GetFrom(), m.GetTo(), m.GetMsgType(), resp)
 	//失败处理。
 	if false == resp.Success {
 		r.onHeartbeatsFailed(m.GetFrom(), &resp.RspHeartbeat, func(to uint64) { r.sendAppend(to) })

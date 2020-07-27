@@ -47,7 +47,7 @@ func (r *Raft) onVote(m pb.Message) {
 	var rsp RspVote
 	rsp.fromPbMsg(m)
 
-	log.Debugf("'%d->%d'(%v):%v", m.GetFrom(), m.GetTo(), m.GetMsgType(), rsp)
+	log.Debugf("onVote '%d->%d'(%v):%v", m.GetFrom(), m.GetTo(), m.GetMsgType(), rsp)
 	//
 	//如果接收到的 RPC 请求或响应中，任期号T > currentTerm，那么就令 currentTerm 等于 T，并切换状态为跟随者（5.1 节）
 	if rsp.Term > curTerm {
@@ -61,6 +61,11 @@ func (r *Raft) onVote(m pb.Message) {
 	if false == rsp.VoteGranted {
 		//可能已经投票给其它人了
 		r.votes[m.GetFrom()] = false
+		rejectCnt := len(r.votes) - r.voteCount()
+		if IsMajor(rejectCnt, r.peerCount()) {
+			//如果已经有大多数人拒绝了，那么直接就失败了.
+			r.becomeFollower(curTerm, 0)
+		}
 		return
 	}
 	r.votes[m.GetFrom()] = true
@@ -82,7 +87,7 @@ func (r *Raft) handleVote(m pb.Message) {
 	var req ReqVote
 	req.fromPbMsg(m)
 
-	log.Debugf("'%d->%d'(%v):%+v", m.GetFrom(), m.GetTo(), m.GetMsgType(), req)
+	log.Debugf("handleVote '%d->%d'(%v):%+v", m.GetFrom(), m.GetTo(), m.GetMsgType(), req)
 
 	//1.如果term < currentTerm返回 false （5.2 节）
 	if req.Term < curTerm {
@@ -90,20 +95,23 @@ func (r *Raft) handleVote(m pb.Message) {
 		r.doVote(m.GetFrom(), curTerm, false)
 		return
 	}
-	if false == r.RaftLog.reqHasNewLog(&req) {
-		r.doVote(m.GetFrom(), curTerm, false)
-		return
-	}
 	// 如果接收到的 RPC 请求或响应中，任期号T > currentTerm，那么就令 currentTerm 等于 T，并切换状态为跟随者（5.1 节）
 	if req.Term > curTerm {
-		r.becomeFollower(req.Term, req.CandidateId)
-		r.doVote(m.GetFrom(), curTerm, true)
+		r.becomeFollower(req.Term, 0)
+		//这里仅仅是自己变为follower，因为有比自己大的term了;但是，还是需要比较log，如果日志不满足，那么会拒绝.
+		//r.doVote(m.GetFrom(), curTerm, true)
+		//return
+	}
+	if false == r.RaftLog.reqHasNewLog(&req) {
+		log.Debugf("log was not new")
+		r.doVote(m.GetFrom(), curTerm, false)
 		return
 	}
 	//3.如果 votedFor 为空或者为 candidateId，并且候选人的日志至少和自己一样新，那么就投票给他（5.2 节，5.4 节）
 	//req.Term == curTerm
 	if r.Vote != 0 && r.Vote != req.CandidateId {
 		//已经投票给其它人了。
+		log.Debugf("vote others %d", r.Vote)
 		r.doVote(req.CandidateId, curTerm, false)
 		return
 	}
@@ -115,8 +123,8 @@ func (rl *RaftLog) reqHasNewLog(req *ReqVote) (isNew bool) {
 	//3.1 get last term/index;
 	lastIndex := rl.LastIndex()
 	if lastIndex == 0 {
-		//如果系统刚刚启动，日志为空，那么请求日志为0就可以了.
-		return req.LastLogIndex == 0
+		//如果系统刚刚启动，日志为空，那么请求日志必然是新等.
+		return true
 	}
 	//check new logs;
 	lastTerm, err := rl.Term(lastIndex)

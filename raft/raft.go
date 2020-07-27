@@ -184,6 +184,15 @@ func newRaft(c *Config) *Raft {
 	//r.electionTimeout = c.ElectionTick
 	r.electionTick = c.ElectionTick
 	r.State = StateFollower
+	hard, _, err := c.Storage.InitialState()
+	if err != nil {
+		panic(err)
+	}
+	r.Vote = hard.Vote
+	r.Term = hard.Term
+	if hard.Commit > 0 {
+		r.RaftLog.committed = hard.Commit
+	}
 	//init random;
 	rand.Seed(time.Now().UnixNano())
 	r.randomElection()
@@ -254,7 +263,7 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	//election reset;
 	r.electionElapsed = 0
 	r.randomElection()
-	log.Debugf("%d become to follower(%d) vote(%d)", r.id, r.Term, lead)
+	log.Debugf("%d become to follower(%d) vote(%d) lastIndex(%d)", r.id, r.Term, lead, r.RaftLog.LastIndex())
 }
 
 // becomeCandidate transform this peer's state to candidate
@@ -290,7 +299,7 @@ func (r *Raft) becomeLeader() {
 	}
 	log.Debugf("%d become to leader(%d)", r.id, r.Term)
 	//TODO : check - 论文说，每次选举为leader，都会立马发送一条空消息（心跳消息）；但是，这里实现，似乎说data为空都append消息。
-	r.Step(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{}}})
+	r.Step(pb.Message{From: 0, To: 0, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{}}})
 	//r.Step(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgBeat})
 }
 
@@ -398,6 +407,10 @@ func (r *Raft) handleLocal(m pb.Message) error {
 }
 
 func (r *Raft) handlePropose(m pb.Message) {
+	if r.State != StateLeader {
+		log.Warnf("state(%v) was not leader!can not Propose(ents=%d)", r.State, len(m.GetEntries()))
+		return
+	}
 	log.Debugf("'%d->%d'%v(ents=%d)", r.id, m.GetTo(), m.GetMsgType(), len(m.GetEntries()))
 	//append logs;
 	rlog := r.RaftLog

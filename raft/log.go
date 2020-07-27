@@ -84,11 +84,6 @@ func newLog(storage Storage) *RaftLog {
 		rl.entries = make([]pb.Entry, len(ents))
 		copy(rl.entries, ents)
 		log.Debugf("load from storage %d entries", len(ents))
-		//snapshot
-		//ss,err := storage.Snapshot()
-		//if err != nil {
-		//	panic("newLog storage.Snapshot err:"+err.Error())
-		//}
 	}
 
 	return rl
