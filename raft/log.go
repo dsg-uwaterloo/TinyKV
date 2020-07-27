@@ -14,7 +14,12 @@
 
 package raft
 
-import pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+import (
+	"fmt"
+	"github.com/pingcap-incubator/tinykv/log"
+	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+	"strings"
+)
 
 // RaftLog manage the log entries, its struct look like:
 //
@@ -56,7 +61,57 @@ type RaftLog struct {
 // to the state that it just commits and applies the latest snapshot.
 func newLog(storage Storage) *RaftLog {
 	// Your Code Here (2A).
-	return nil
+	rl := new(RaftLog)
+	rl.storage = storage
+	first, err := storage.FirstIndex()
+	if err != nil {
+		panic("newLog storage.FirstIndex err:" + err.Error())
+	}
+	last, err := storage.LastIndex()
+	if err != nil {
+		panic("newLog storage.LastIndex err:" + err.Error())
+	}
+	rl.committed = first - 1
+	rl.applied = first - 1
+	rl.stabled = last
+	log.Debugf("first(%d)last(%d)", first, last)
+	if last >= first { //not empty
+		ents, err := storage.Entries(first, last+1)
+		if err != nil {
+			panic("newLog storage.Entries err:" + err.Error())
+		}
+		//do copy
+		rl.entries = make([]pb.Entry, len(ents))
+		copy(rl.entries, ents)
+		log.Debugf("load from storage %d entries", len(ents))
+		//snapshot
+		//ss,err := storage.Snapshot()
+		//if err != nil {
+		//	panic("newLog storage.Snapshot err:"+err.Error())
+		//}
+	}
+
+	return rl
+}
+
+var ErrUnavailableEmpty = fmt.Errorf("%s (empty entries)", ErrUnavailable.Error())
+var ErrUnavailableSmall = fmt.Errorf("%s (index is too small)", ErrUnavailable.Error())
+var ErrUnavailableBig = fmt.Errorf("%s (index is out of range)", ErrUnavailable.Error())
+
+func (l *RaftLog) pos(idx uint64) (uint64, error) {
+	elen := len(l.entries)
+	if elen == 0 {
+		return 0, ErrUnavailableEmpty
+	}
+	e := l.entries[0]
+	if idx < e.Index {
+		return 0, ErrUnavailableSmall
+	}
+	off := idx - e.Index
+	if off >= uint64(elen) {
+		return 0, ErrUnavailableBig
+	}
+	return off, nil
 }
 
 // We need to compact the log entries in some point of time like
@@ -69,23 +124,88 @@ func (l *RaftLog) maybeCompact() {
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
-	return nil
+	pos, err := l.pos(l.stabled + 1)
+	if err == nil {
+		return l.entries[pos:]
+	}
+	return []pb.Entry{}
 }
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
-	return nil
+	cpos, _ := l.pos(l.committed)
+	start, err := l.pos(l.applied + 1)
+	if err != nil { //如果报错，说明这个位置没有数据，那么直接返回空。
+		return ents
+	}
+	// [,)
+	return l.entries[start : cpos+1]
 }
 
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
+	elen := len(l.entries)
+	if elen > 0 {
+		return l.entries[elen-1].Index
+	}
 	return 0
 }
 
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
-	return 0, nil
+	pos, err := l.pos(i)
+	if err != nil {
+		return 0, err
+	}
+	return l.entries[pos].Term, nil
+}
+
+//----------------------------------
+func (l *RaftLog) startAt(start uint64) (ents []pb.Entry, err error) {
+	start, err = l.pos(start)
+	if err != nil {
+		return ents, err
+	}
+	return l.entries[start:], err
+}
+
+func (l *RaftLog) String() string {
+	return fmt.Sprintf(`{"applied":%d,"commited":%d,"stabled":%d,"entries":%s,"pendingSnapshot":%s}`,
+		l.applied, l.committed, l.stabled, entries2Str(1, l.entries), snapshot2Str(l.pendingSnapshot))
+}
+
+func snapshot2Str(sp *pb.Snapshot) string {
+	if sp == nil {
+		return "nil"
+	}
+	return fmt.Sprintf(`{dlen(%d) %v}`, len(sp.Data), sp.Metadata)
+}
+
+func entry2Str(e *pb.Entry) string {
+	return fmt.Sprintf(`"%v,%d,%d,dlen(%d)`, e.EntryType, e.Term, e.Index, len(e.Data))
+}
+
+func entries2Str(n int, entries []pb.Entry) string {
+	var builder strings.Builder
+	builder.WriteByte('[')
+	for idx, e := range entries {
+		builder.WriteByte('{')
+		{ //write entry
+			builder.WriteString(entry2Str(&e))
+		}
+		builder.WriteByte('}')
+		if idx < len(entries)-1 {
+			if idx < n {
+				builder.WriteByte(',')
+			} else {
+				builder.WriteString(fmt.Sprintf("...<%d>", len(entries)-idx))
+				break
+			}
+		}
+	}
+	builder.WriteByte(']')
+	return builder.String()
 }

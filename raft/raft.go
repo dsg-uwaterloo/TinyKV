@@ -16,8 +16,11 @@ package raft
 
 import (
 	"errors"
-
+	"fmt"
+	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+	"math/rand"
+	"time"
 )
 
 // None is a placeholder node ID used when there is no leader.
@@ -135,6 +138,7 @@ type Raft struct {
 	heartbeatTimeout int
 	// baseline of election interval
 	electionTimeout int
+	electionTick    int
 	// number of ticks since it reached last heartbeatTimeout.
 	// only leader keeps heartbeatElapsed.
 	heartbeatElapsed int
@@ -157,68 +161,148 @@ type Raft struct {
 	PendingConfIndex uint64
 }
 
+func (r *Raft) String() string {
+	return fmt.Sprintf("{id:%d term:%d %v prs:%d log:%s}", r.id, r.Term, r.State, len(r.Prs), r.RaftLog.String())
+}
+
 // newRaft return a raft peer with the given config
 func newRaft(c *Config) *Raft {
 	if err := c.validate(); err != nil {
 		panic(err.Error())
 	}
 	// Your Code Here (2A).
-	return nil
+	r := new(Raft)
+	//init raft-log;
+	r.RaftLog = newLog(c.Storage)
+	r.RaftLog.applied = c.Applied
+	if r.RaftLog.committed < c.Applied {
+		r.RaftLog.committed = c.Applied
+	}
+	//others;
+	r.id = c.ID
+	r.heartbeatTimeout = c.HeartbeatTick
+	//r.electionTimeout = c.ElectionTick
+	r.electionTick = c.ElectionTick
+	r.State = StateFollower
+	//init random;
+	rand.Seed(time.Now().UnixNano())
+	r.randomElection()
+	//init prs;
+	r.Prs = make(map[uint64]*Progress, len(c.peers))
+	for _, peer := range c.peers {
+		r.Prs[peer] = &Progress{}
+	}
+	log.Debug(r.String())
+	return r
 }
 
 // sendAppend sends an append RPC with new entries (if any) and the
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
-	return false
+	var req ReqAppend
+	pr := r.Prs[to]
+	if false == r.makeHeartbeat(pr, &req.ReqHeartbeat) {
+		return false
+	}
+	//get entries;
+	ents, err := r.RaftLog.startAt(pr.Next)
+	if err != nil {
+		log.Warnf("startAt(%d) error:%s", pr.Next, err.Error())
+		//TODO : check --- 如果没有entry，是不是直接发送心跳好了.
+	} else {
+		req.copyEntries(ents)
+	}
+	r.send(to, &req)
+	return true
 }
 
 // sendHeartbeat sends a heartbeat RPC to the given peer.
 func (r *Raft) sendHeartbeat(to uint64) {
 	// Your Code Here (2A).
+	var req ReqHeartbeat
+	if r.makeHeartbeat(r.Prs[to], &req) {
+		r.send(to, &req)
+	}
 }
 
 // tick advances the internal logical clock by a single tick.
 func (r *Raft) tick() {
 	// Your Code Here (2A).
+	if r.State == StateLeader {
+		r.heartbeatElapsed++
+		if r.heartbeatElapsed >= r.heartbeatTimeout {
+			//TODO : do heartbeat;
+			r.Step(pb.Message{MsgType: pb.MessageType_MsgBeat})
+		}
+	} else {
+		r.electionElapsed++
+		if r.electionElapsed >= r.electionTimeout {
+			//TODO : do elect;
+			r.elect()
+		}
+	}
 }
 
 // becomeFollower transform this peer's state to Follower
 func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	// Your Code Here (2A).
+	r.Term = term
+	r.Lead = lead
+	r.State = StateFollower
+	r.Vote = lead
+	//election reset;
+	r.electionElapsed = 0
+	r.randomElection()
+	log.Debugf("%d become to follower(%d) vote(%d)", r.id, r.Term, lead)
 }
 
 // becomeCandidate transform this peer's state to candidate
-func (r *Raft) becomeCandidate() {
+func (r *Raft) becomeCandidate() { //可能是再次选举。
 	// Your Code Here (2A).
+
+	//(5.2)自增当前的任期号（currentTerm）
+	r.Term++
+	r.State = StateCandidate
+	//(5.2)给自己投票
+	r.Vote = r.id
+	r.Lead = 0
+	r.votes = make(map[uint64]bool)
+	r.votes[r.id] = true
+	//(5.2)重置选举超时计时器
+	r.electionElapsed = 0
+	r.randomElection()
+	log.Debugf("%d goto election(%d)", r.id, r.Term)
 }
 
 // becomeLeader transform this peer's state to leader
 func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
+	r.State = StateLeader
+	r.votes = nil
+	r.Lead = r.id
+	r.heartbeatTimeout = 0
+	//选举后重新初始化(progress)
+	for _, pr := range r.Prs {
+		pr.Match = r.RaftLog.LastIndex()
+		pr.Next = r.RaftLog.LastIndex() + 1 //初始化为领导人最后索引值加一
+	}
+	log.Debugf("%d become to leader(%d)", r.id, r.Term)
+	//TODO : check - 论文说，每次选举为leader，都会立马发送一条空消息（心跳消息）；但是，这里实现，似乎说data为空都append消息。
+	r.Step(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{}}})
+	//r.Step(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgBeat})
 }
 
 // Step the entrance of handle message, see `MessageType`
 // on `eraftpb.proto` for what msgs should be handled
 func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
-	switch r.State {
-	case StateFollower:
-	case StateCandidate:
-	case StateLeader:
+	if IsLocalMsg(m.MsgType) {
+		return r.handleLocal(m)
 	}
-	return nil
-}
 
-// handleAppendEntries handle AppendEntries RPC request
-func (r *Raft) handleAppendEntries(m pb.Message) {
-	// Your Code Here (2A).
-}
-
-// handleHeartbeat handle Heartbeat RPC request
-func (r *Raft) handleHeartbeat(m pb.Message) {
-	// Your Code Here (2A).
+	return r.handleRemote(m)
 }
 
 // handleSnapshot handle Snapshot RPC request
@@ -234,4 +318,130 @@ func (r *Raft) addNode(id uint64) {
 // removeNode remove a node from raft group
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
+}
+
+//other help functions;
+func (r *Raft) sendPb(to uint64, m pb.Message) {
+	if m.GetFrom() == 0 {
+		m.From = r.id
+	}
+	m.To = to
+	r.msgs = append(r.msgs, m)
+}
+
+func (r *Raft) send(to uint64, m message) {
+	pbm := m.toPbMsg()
+	r.sendPb(to, pbm)
+	if m2, ok := m.(*ReqAppend); ok {
+		elen := len(m2.Entries)
+		m2.Entries = nil
+		log.Debugf("send '%d->%d'(%v):%+v(ents=%d)", r.id, to, pbm.GetMsgType(), m2, elen)
+	} else {
+		log.Debugf("send '%d->%d'(%v):%+v", r.id, to, pbm.GetMsgType(), m)
+	}
+}
+
+func (r *Raft) broadcast(m message) {
+	for to, _ := range r.Prs {
+		if to == r.id {
+			continue
+		}
+		r.send(to, m)
+	}
+}
+
+func (r *Raft) randomElection() {
+	r.electionTimeout = r.electionTick + rand.Intn(r.electionTick)
+}
+
+func (r *Raft) peerCount() int {
+	return len(r.Prs) //count self node;
+}
+
+func (r *Raft) handleRemote(m pb.Message) error {
+	//handle net message;
+	if r.State == StateFollower {
+		//收到消息，就重置——如果一个跟随者在一段时间里没有接收到任何消息，也就是选举超时
+		r.electionElapsed = 0
+	}
+	//process;
+	switch m.GetMsgType() {
+	case pb.MessageType_MsgRequestVote:
+		r.handleVote(m)
+	case pb.MessageType_MsgRequestVoteResponse:
+		r.onVote(m)
+	case pb.MessageType_MsgAppend:
+		r.handleAppendEntries(m)
+	case pb.MessageType_MsgAppendResponse:
+		r.onAppendEntries(m)
+	case pb.MessageType_MsgHeartbeat:
+		r.handleHeartbeat(m)
+	case pb.MessageType_MsgHeartbeatResponse:
+		r.onHeartbeat(m)
+	default:
+		log.Warnf("Step(%v) was not support", m.GetMsgType())
+	}
+	return nil
+}
+
+func (r *Raft) handleLocal(m pb.Message) error {
+
+	switch m.GetMsgType() {
+	case pb.MessageType_MsgHup:
+		r.handleHup(m)
+	case pb.MessageType_MsgBeat:
+		r.handleBeat(m)
+	case pb.MessageType_MsgPropose:
+		r.handlePropose(m)
+	}
+	return nil
+}
+
+func (r *Raft) handlePropose(m pb.Message) {
+	log.Debugf("'%d->%d'%v(ents=%d)", r.id, m.GetTo(), m.GetMsgType(), len(m.GetEntries()))
+	//append logs;
+	rlog := r.RaftLog
+	lastIndex := rlog.LastIndex()
+	for _, e := range m.GetEntries() {
+		//if e.Data != nil {
+		e.Term = r.Term
+		e.Index = lastIndex + 1
+		rlog.entries = append(rlog.entries, *e)
+		//}
+	}
+	if r.peerCount() == 1 {
+		rlog.committed = rlog.LastIndex()
+		return
+	}
+	r.broadcastAppend()
+}
+
+func (r *Raft) broadcastAppend() {
+	rlog := r.RaftLog
+	for to, pr := range r.Prs {
+		if to == r.id {
+			pr.Match = rlog.LastIndex()
+			pr.Next = pr.Match + 1
+		} else {
+			r.sendAppend(to)
+		}
+	}
+}
+
+func (r *Raft) handleBeat(m pb.Message) {
+	log.Debugf("%d %v", r.id, m.GetMsgType())
+	if r.peerCount() == 1 {
+		return
+	}
+	for to, _ := range r.Prs {
+		if to == r.id {
+			continue
+		}
+		r.sendHeartbeat(to)
+	}
+}
+
+func (r *Raft) handleHup(m pb.Message) {
+	log.Debugf("%d %v", r.id, m.GetMsgType())
+	r.elect()
 }
