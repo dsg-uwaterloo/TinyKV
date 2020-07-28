@@ -7,6 +7,13 @@ import (
 
 func (r *Raft) elect() {
 	log.Debugf("%d elect", r.id)
+	if r.State == StateLeader {
+		//TODO : 是否需要加节点数限制.
+		//if r.peerCount() == 1{
+		log.Warnf("one node and already leader")
+		//}
+		return
+	}
 	//
 	r.becomeCandidate()
 	//如果只有一个节点，那么就直接是leader。

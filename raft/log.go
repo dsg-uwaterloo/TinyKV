@@ -134,8 +134,9 @@ func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
 	pos, err := l.pos(l.stabled + 1)
 	if err == nil {
-		return l.entries[pos:]
+		return dupEntries(l.entries[pos:])
 	}
+	log.Warn("no entries ", err)
 	return []pb.Entry{}
 }
 
@@ -145,10 +146,10 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	cpos, _ := l.pos(l.committed)
 	start, err := l.pos(l.applied + 1)
 	if err != nil { //如果报错，说明这个位置没有数据，那么直接返回空。
-		return ents
+		return dupEntries(ents)
 	}
 	// [,)
-	return l.entries[start : cpos+1]
+	return dupEntries(l.entries[start : cpos+1])
 }
 
 // LastIndex return the last index of the log entries
@@ -177,12 +178,20 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 }
 
 //----------------------------------
+func dupEntries(ents []pb.Entry) (dst []pb.Entry) {
+	if len(ents) > 0 {
+		dst = make([]pb.Entry, len(ents))
+		copy(dst, ents)
+	}
+	return dst
+}
+
 func (l *RaftLog) startAt(start uint64) (ents []pb.Entry, err error) {
 	start, err = l.pos(start)
 	if err != nil {
 		return ents, err
 	}
-	return l.entries[start:], err
+	return dupEntries(l.entries[start:]), err
 }
 
 func (l *RaftLog) String() string {

@@ -217,7 +217,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 	//get entries;
 	ents, err := r.RaftLog.startAt(pr.Next)
 	if err != nil {
-		log.Warnf("startAt(%d) error:%s", pr.Next, err.Error())
+		//log.Warnf("startAt(%d) error:%s", pr.Next, err.Error())
 		//TODO : check --- 如果没有entry，是不是直接发送心跳好了.
 	} else {
 		req.copyEntries(ents)
@@ -269,7 +269,6 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 // becomeCandidate transform this peer's state to candidate
 func (r *Raft) becomeCandidate() { //可能是再次选举。
 	// Your Code Here (2A).
-
 	//(5.2)自增当前的任期号（currentTerm）
 	r.Term++
 	r.State = StateCandidate
@@ -502,6 +501,7 @@ func (r *Raft) handlePropose(m pb.Message) {
 	}
 	if r.peerCount() == 1 {
 		rlog.committed = rlog.LastIndex()
+		log.Debugf("only 1 node,set commit=%d", rlog.committed)
 		return
 	}
 	r.broadcastAppend()

@@ -20,13 +20,14 @@ func (r *Raft) onHeartbeatsFailed(to uint64, resp *RspHeartbeat, doAgain func(to
 	}
 	pr.Match--
 	pr.Next = pr.Match + 1
-	_, err := r.RaftLog.pos(pr.Match)
-	switch err {
-	case ErrUnavailableSmall, ErrUnavailableEmpty:
-		//没有更小等日志了，直接发snapshot;
-		r.sendSnapshot(to)
-		return
-	}
+	//d : do later;
+	//_, err := r.RaftLog.pos(pr.Match)
+	//switch err {
+	//case ErrUnavailableSmall, ErrUnavailableEmpty:
+	//	//没有更小等日志了，直接发snapshot;
+	//	r.sendSnapshot(to)
+	//	return
+	//}
 	//signal beat;
 	doAgain(to)
 }
