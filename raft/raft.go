@@ -317,6 +317,69 @@ func (r *Raft) Step(m pb.Message) error {
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
+	log.Debugf("handleSnapshot-%d '%d->%d'(%v):%+v", r.id, m.GetFrom(), m.GetTo(), m.GetMsgType(), m.GetSnapshot().GetMetadata())
+	var resp pb.Message
+	resp.Term = r.Term
+	to := m.GetFrom()
+	//如果term < currentTerm就立即回复
+	if m.GetTerm() < r.Term {
+		r.sendPb(to, resp)
+		return
+	}
+	//check raftlog ;
+	sp := m.GetSnapshot()
+	md := sp.GetMetadata()
+	rlog := r.RaftLog
+	if len(rlog.entries) > 0 {
+		//通常快照会包含没有在接收者日志中存在的信息。在这种情况下，跟随者丢弃其整个日志；它全部被快照取代，并且可能包含与快照冲突的未提交条目。
+		pos, err := rlog.pos(md.GetIndex())
+		switch err {
+		case ErrUnavailableEmpty:
+			panic(err)
+		case ErrUnavailableBig:
+			//drop logs;
+			rlog.entries = []pb.Entry{}
+		case ErrUnavailableSmall: //如果接收到的快照是自己日志的前面部分（由于网络重传或者错误），那么被快照包含的条目将会被全部删除，
+		//do nothing;drop this message;
+		default: //nil,但是快照后面的条目仍然有效，必须保留。
+			//drop [start:pos+1)
+			if pos+1 == uint64(len(rlog.entries)) {
+				rlog.entries = []pb.Entry{}
+			} else {
+				rlog.entries = rlog.entries[pos+1:]
+			}
+		}
+	}
+	//
+	if rlog.committed <= md.Index {
+		rlog.committed = md.Index
+	} else {
+		log.Warnf("logic error:committed(%d)> md.Index(%d)", rlog.committed, md.Index)
+	}
+	if rlog.applied <= md.Index {
+		rlog.applied = md.Index
+	} else {
+		log.Warnf("logic error:applied(%d)> md.Index(%d)", rlog.applied, md.Index)
+	}
+	rlog.setMD(md)
+	//set nodes;
+	if r.State == StateLeader {
+		log.Warnf("node(%d) was leader!", r.id)
+	} else {
+		prs := map[uint64]*Progress{}
+		for _, nd := range md.GetConfState().GetNodes() {
+			prs[nd] = &Progress{}
+		}
+		r.Prs = prs
+	}
+	//set term;
+	if r.Term < md.Term {
+		r.Term = md.Term
+	}
+	//change stte;
+	r.becomeFollower(r.Term, m.GetFrom())
+	//
+	r.sendPb(m.GetFrom(), resp)
 }
 
 // addNode add a new node to raft group
@@ -348,6 +411,18 @@ func (r *Raft) send(to uint64, m message) {
 	} else {
 		log.Debugf("send '%d->%d'(%v):%+v", r.id, to, pbm.GetMsgType(), m)
 	}
+}
+
+func (r *Raft) sendSnapshot(to uint64) {
+	var sp pb.Snapshot
+	sp.Metadata = &r.RaftLog.md
+	msg := pb.Message{
+		MsgType:  pb.MessageType_MsgSnapshot,
+		From:     r.id,
+		To:       to,
+		Snapshot: &sp,
+	}
+	r.sendPb(to, msg)
 }
 
 func (r *Raft) broadcast(m message) {
@@ -387,6 +462,9 @@ func (r *Raft) handleRemote(m pb.Message) error {
 		r.handleHeartbeat(m)
 	case pb.MessageType_MsgHeartbeatResponse:
 		r.onHeartbeat(m)
+	case pb.MessageType_MsgSnapshot:
+		r.handleSnapshot(m)
+
 	default:
 		log.Warnf("Step(%v) was not support", m.GetMsgType())
 	}
@@ -408,7 +486,7 @@ func (r *Raft) handleLocal(m pb.Message) error {
 
 func (r *Raft) handlePropose(m pb.Message) {
 	if r.State != StateLeader {
-		log.Warnf("state(%v) was not leader!can not Propose(ents=%d)", r.State, len(m.GetEntries()))
+		log.Warnf("state(%v) was not leader!can not Propose('%d->%d'(ents=%d))", r.State, r.id, m.GetTo(), len(m.GetEntries()))
 		return
 	}
 	log.Debugf("'%d->%d'%v(ents=%d)", r.id, m.GetTo(), m.GetMsgType(), len(m.GetEntries()))

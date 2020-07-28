@@ -56,6 +56,7 @@ func (r *Raft) onVote(m pb.Message) {
 	}
 	if r.State != StateCandidate {
 		//如果已经不是Candidate了，不在乎选票了.
+		log.Debugf("'%d' was leader now.", r.id)
 		return
 	}
 	if false == rsp.VoteGranted {

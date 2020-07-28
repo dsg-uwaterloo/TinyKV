@@ -76,7 +76,8 @@ type RawNode struct {
 // NewRawNode returns a new RawNode given configuration and a list of raft peers.
 func NewRawNode(config *Config) (*RawNode, error) {
 	// Your Code Here (2A).
-	return nil, nil
+	rn := &RawNode{newRaft(config)}
+	return rn, nil
 }
 
 // Tick advances the internal logical clock by a single tick.
@@ -142,21 +143,47 @@ func (rn *RawNode) Step(m pb.Message) error {
 }
 
 // Ready returns the current point-in-time state of this RawNode.
-func (rn *RawNode) Ready() Ready {
+func (rn *RawNode) Ready() (rd Ready) {
 	// Your Code Here (2A).
+	r := rn.Raft
+	//soft state;
+	rd.SoftState = &SoftState{
+		Lead:      r.Lead,
+		RaftState: r.State,
+	}
+	//hardstate;
+	rd.HardState.Commit = r.RaftLog.committed
+	rd.HardState.Term = r.Term
+	rd.HardState.Vote = r.Vote
+	//
+	rd.Entries = r.RaftLog.unstableEntries()
+	if r.RaftLog.pendingSnapshot != nil {
+		rd.Snapshot = *r.RaftLog.pendingSnapshot
+	}
+	rd.CommittedEntries = r.RaftLog.nextEnts()
+	//fetch messages;
+	rd.Messages = append(rd.Messages, r.msgs...)
+	r.msgs = []pb.Message{}
 	return Ready{}
 }
 
 // HasReady called when RawNode user need to check if any Ready pending.
 func (rn *RawNode) HasReady() bool {
 	// Your Code Here (2A).
-	return false
+	rlog := rn.Raft.RaftLog
+	if rlog.LastIndex() <= rlog.stabled {
+		return rlog.committed > rlog.applied
+	}
+	return true
 }
 
 // Advance notifies the RawNode that the application has applied and saved progress in the
 // last Ready results.
 func (rn *RawNode) Advance(rd Ready) {
 	// Your Code Here (2A).
+	rlog := rn.Raft.RaftLog
+	rlog.applied = rd.HardState.Commit
+	rlog.stabled += uint64(len(rd.Entries))
 }
 
 // GetProgress return the the Progress of this node and its peers, if this

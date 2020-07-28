@@ -20,6 +20,13 @@ func (r *Raft) onHeartbeatsFailed(to uint64, resp *RspHeartbeat, doAgain func(to
 	}
 	pr.Match--
 	pr.Next = pr.Match + 1
+	_, err := r.RaftLog.pos(pr.Match)
+	switch err {
+	case ErrUnavailableSmall, ErrUnavailableEmpty:
+		//没有更小等日志了，直接发snapshot;
+		r.sendSnapshot(to)
+		return
+	}
 	//signal beat;
 	doAgain(to)
 }
@@ -188,7 +195,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	//	raftLog.entries 比 req.entries 日志多，并且没有冲突的话,那么resp.LastLogIndex < raftLog.entries的.
 	//	但是，commit以leader给的日志为准，所以是resp的最大日志（prevLogIndex + len(req.entries)计算）.
 	cidx := min(resp.LastLogIndex, req.LeaderCommitId)
-	log.Debugf("set commit=%d", cidx)
+	//log.Debugf("set commit=%d", cidx)
 	if cidx > r.RaftLog.committed {
 		r.RaftLog.committed = cidx
 	}

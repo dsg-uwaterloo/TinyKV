@@ -55,6 +55,7 @@ type RaftLog struct {
 	pendingSnapshot *pb.Snapshot
 
 	// Your Data Here (2A).
+	md pb.SnapshotMetadata
 }
 
 // newLog returns log using the given storage. It recovers the log
@@ -85,8 +86,20 @@ func newLog(storage Storage) *RaftLog {
 		copy(rl.entries, ents)
 		log.Debugf("load from storage %d entries", len(ents))
 	}
-
+	sp, err := storage.Snapshot()
+	if err != nil {
+		//
+	} else {
+		rl.setMD(sp.GetMetadata())
+	}
 	return rl
+}
+
+func (rl *RaftLog) setMD(md *pb.SnapshotMetadata) {
+	rl.md.Index = md.GetIndex()
+	rl.md.Term = md.GetTerm()
+	rl.md.ConfState = &pb.ConfState{}
+	rl.md.ConfState.Nodes = append(rl.md.ConfState.Nodes, md.GetConfState().GetNodes()...)
 }
 
 var ErrUnavailableEmpty = fmt.Errorf("%s (empty entries)", ErrUnavailable.Error())
@@ -145,7 +158,7 @@ func (l *RaftLog) LastIndex() uint64 {
 	if elen > 0 {
 		return l.entries[elen-1].Index
 	}
-	return 0
+	return l.md.GetIndex()
 }
 
 // Term return the term of the entry in the given index
@@ -153,6 +166,11 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
 	pos, err := l.pos(i)
 	if err != nil {
+		//if err == ErrUnavailableSmall {
+		if i == l.md.GetIndex() {
+			return l.md.GetTerm(), nil
+		}
+		//}
 		return 0, err
 	}
 	return l.entries[pos].Term, nil
