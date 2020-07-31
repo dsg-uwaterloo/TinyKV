@@ -201,7 +201,7 @@ func newRaft(c *Config) *Raft {
 	for _, peer := range c.peers {
 		r.Prs[peer] = &Progress{}
 	}
-	log.Debug(r.String())
+	log.PkgDebugf(log.PT_raft, 3, r.String())
 	return r
 }
 
@@ -263,7 +263,7 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	//election reset;
 	r.electionElapsed = 0
 	r.randomElection()
-	log.Debugf("%d become to follower(%d) vote(%d) lastIndex(%d)", r.id, r.Term, lead, r.RaftLog.LastIndex())
+	debugf("%d become to follower(%d) vote(%d) lastIndex(%d)", r.id, r.Term, lead, r.RaftLog.LastIndex())
 }
 
 // becomeCandidate transform this peer's state to candidate
@@ -280,7 +280,7 @@ func (r *Raft) becomeCandidate() { //可能是再次选举。
 	//(5.2)重置选举超时计时器
 	r.electionElapsed = 0
 	r.randomElection()
-	log.Debugf("%d goto election(%d)", r.id, r.Term)
+	debugf("%d goto election(%d)", r.id, r.Term)
 }
 
 // becomeLeader transform this peer's state to leader
@@ -296,7 +296,7 @@ func (r *Raft) becomeLeader() {
 		pr.Match = r.RaftLog.LastIndex()
 		pr.Next = r.RaftLog.LastIndex() + 1 //初始化为领导人最后索引值加一
 	}
-	log.Debugf("%d become to leader(%d)", r.id, r.Term)
+	debugf("%d become to leader(%d)", r.id, r.Term)
 	//TODO : check - 论文说，每次选举为leader，都会立马发送一条空消息（心跳消息）；但是，这里实现，似乎说data为空都append消息。
 	r.Step(pb.Message{From: 0, To: 0, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{}}})
 	//r.Step(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgBeat})
@@ -316,7 +316,7 @@ func (r *Raft) Step(m pb.Message) error {
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
-	log.Debugf("handleSnapshot-%d '%d->%d'(%v):%+v", r.id, m.GetFrom(), m.GetTo(), m.GetMsgType(), m.GetSnapshot().GetMetadata())
+	debugf("handleSnapshot-%d '%d->%d'(%v):%+v", r.id, m.GetFrom(), m.GetTo(), m.GetMsgType(), m.GetSnapshot().GetMetadata())
 	var resp pb.Message
 	resp.Term = r.Term
 	to := m.GetFrom()
@@ -406,9 +406,9 @@ func (r *Raft) send(to uint64, m message) {
 	if m2, ok := m.(*ReqAppend); ok {
 		elen := len(m2.Entries)
 		m2.Entries = nil
-		log.Debugf("send '%d->%d'(%v):%+v(ents=%d)", r.id, to, pbm.GetMsgType(), m2, elen)
+		debugf("send '%d->%d'(%v):%+v(ents=%d)", r.id, to, pbm.GetMsgType(), m2, elen)
 	} else {
-		log.Debugf("send '%d->%d'(%v):%+v", r.id, to, pbm.GetMsgType(), m)
+		debugf("send '%d->%d'(%v):%+v", r.id, to, pbm.GetMsgType(), m)
 	}
 }
 
@@ -488,7 +488,7 @@ func (r *Raft) handlePropose(m pb.Message) {
 		log.Warnf("state(%v) was not leader!can not Propose('%d->%d'(ents=%d))", r.State, r.id, m.GetTo(), len(m.GetEntries()))
 		return
 	}
-	log.Debugf("'%d->%d'%v(ents=%d)", r.id, m.GetTo(), m.GetMsgType(), len(m.GetEntries()))
+	debugf("'%d->%d'%v(ents=%d)", r.id, m.GetTo(), m.GetMsgType(), len(m.GetEntries()))
 	//append logs;
 	rlog := r.RaftLog
 	lastIndex := rlog.LastIndex()
@@ -501,7 +501,7 @@ func (r *Raft) handlePropose(m pb.Message) {
 	}
 	if r.peerCount() == 1 {
 		rlog.committed = rlog.LastIndex()
-		log.Debugf("only 1 node,set commit=%d", rlog.committed)
+		debugf("only 1 node,set commit=%d", rlog.committed)
 		return
 	}
 	r.broadcastAppend()
@@ -520,7 +520,7 @@ func (r *Raft) broadcastAppend() {
 }
 
 func (r *Raft) handleBeat(m pb.Message) {
-	log.Debugf("%d %v", r.id, m.GetMsgType())
+	debugf("%d %v", r.id, m.GetMsgType())
 	if r.peerCount() == 1 {
 		return
 	}
@@ -533,6 +533,6 @@ func (r *Raft) handleBeat(m pb.Message) {
 }
 
 func (r *Raft) handleHup(m pb.Message) {
-	log.Debugf("%d %v", r.id, m.GetMsgType())
+	debugf("%d %v", r.id, m.GetMsgType())
 	r.elect()
 }

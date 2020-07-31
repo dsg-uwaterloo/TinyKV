@@ -75,7 +75,7 @@ func newLog(storage Storage) *RaftLog {
 	rl.committed = first - 1
 	rl.applied = first - 1
 	rl.stabled = last
-	log.Debugf("first(%d)last(%d)", first, last)
+	debugf("first(%d)last(%d)", first, last)
 	if last >= first { //not empty
 		ents, err := storage.Entries(first, last+1)
 		if err != nil {
@@ -84,7 +84,7 @@ func newLog(storage Storage) *RaftLog {
 		//do copy
 		rl.entries = make([]pb.Entry, len(ents))
 		copy(rl.entries, ents)
-		log.Debugf("load from storage %d entries", len(ents))
+		debugf("load from storage %d entries", len(ents))
 	}
 	sp, err := storage.Snapshot()
 	if err != nil {

@@ -120,7 +120,7 @@ func (r *Raft) processEntries(entries []*pb.Entry) bool {
 		}
 	}
 
-	//log.Debugf("do append at inpos(%d)",inpos)
+	//debugf("do append at inpos(%d)",inpos)
 	for ; inpos < elen; inpos++ {
 		rlog.entries = append(rlog.entries, *entries[inpos])
 	}
@@ -133,7 +133,7 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 	var req ReqHeartbeat
 	req.fromPbMsg(m)
 	var resp RspHeartbeat
-	log.Debugf("handleHeartbeat '%d->%d'(%v):%v", m.GetFrom(), m.GetTo(), m.GetMsgType(), req)
+	debugf("handleHeartbeat '%d->%d'(%v):%v", m.GetFrom(), m.GetTo(), m.GetMsgType(), req)
 	//
 	r.processHeartBeatRequest(&req, &resp)
 	if false == resp.Success {
@@ -154,7 +154,7 @@ func (r *Raft) onHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
 	var resp RspHeartbeat
 	resp.fromPbMsg(m)
-	log.Debugf("onHeartbeat '%d->%d':%+v", m.GetFrom(), m.GetTo(), resp)
+	debugf("onHeartbeat '%d->%d':%+v", m.GetFrom(), m.GetTo(), resp)
 	//失败处理.
 	if false == resp.Success {
 		r.onHeartbeatsFailed(m.GetFrom(), &resp, r.sendHeartbeat)
@@ -171,7 +171,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 
 	//for log
 	req.Entries = nil
-	log.Debugf("handleAppendEntries '%d->%d'(%v):%+v(ents=%d)", m.GetFrom(), m.GetTo(), m.GetMsgType(), req, len(m.GetEntries()))
+	debugf("handleAppendEntries '%d->%d'(%v):%+v(ents=%d)", m.GetFrom(), m.GetTo(), m.GetMsgType(), req, len(m.GetEntries()))
 	req.Entries = m.GetEntries()
 
 	var resp RspAppend
@@ -196,7 +196,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	//	raftLog.entries 比 req.entries 日志多，并且没有冲突的话,那么resp.LastLogIndex < raftLog.entries的.
 	//	但是，commit以leader给的日志为准，所以是resp的最大日志（prevLogIndex + len(req.entries)计算）.
 	cidx := min(resp.LastLogIndex, req.LeaderCommitId)
-	//log.Debugf("set commit=%d", cidx)
+	//debugf("set commit=%d", cidx)
 	if cidx > r.RaftLog.committed {
 		r.RaftLog.committed = cidx
 	}
@@ -209,7 +209,7 @@ func (r *Raft) onAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
 	var resp RspAppend
 	resp.fromPbMsg(m)
-	log.Debugf("onAppendEntries '%d->%d'(%v):%+v", m.GetFrom(), m.GetTo(), m.GetMsgType(), resp)
+	debugf("onAppendEntries '%d->%d'(%v):%+v", m.GetFrom(), m.GetTo(), m.GetMsgType(), resp)
 	//失败处理。
 	if false == resp.Success {
 		r.onHeartbeatsFailed(m.GetFrom(), &resp.RspHeartbeat, func(to uint64) { r.sendAppend(to) })
@@ -254,7 +254,7 @@ func (r *Raft) onAppendEntries(m pb.Message) {
 					if r.RaftLog.committed < logidx {
 						r.RaftLog.committed = logidx
 						//update the commit id to follower;
-						log.Debug("update commit", r.RaftLog.committed)
+						log.PkgDebugf(log.PT_raft, 3, "update commit %d", r.RaftLog.committed)
 						r.broadcastAppend()
 					}
 				}

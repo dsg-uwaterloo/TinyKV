@@ -16,6 +16,7 @@ package raft
 
 import (
 	"bytes"
+	"github.com/pingcap-incubator/tinykv/log"
 	"reflect"
 	"testing"
 
@@ -185,6 +186,7 @@ func TestRawNodeStart2AC(t *testing.T) {
 }
 
 func TestRawNodeRestart2AC(t *testing.T) {
+	log.SetLevel(log.LOG_LEVEL_DEBUG)
 	entries := []pb.Entry{
 		{Term: 1, Index: 1},
 		{Term: 1, Index: 2, Data: []byte("foo")},

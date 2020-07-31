@@ -6,7 +6,7 @@ import (
 )
 
 func (r *Raft) elect() {
-	log.Debugf("%d elect", r.id)
+	debugf("%d elect", r.id)
 	if r.State == StateLeader {
 		//TODO : 是否需要加节点数限制.
 		//if r.peerCount() == 1{
@@ -54,7 +54,7 @@ func (r *Raft) onVote(m pb.Message) {
 	var rsp RspVote
 	rsp.fromPbMsg(m)
 
-	log.Debugf("onVote '%d->%d'(%v):%v", m.GetFrom(), m.GetTo(), m.GetMsgType(), rsp)
+	debugf("onVote '%d->%d'(%v):%v", m.GetFrom(), m.GetTo(), m.GetMsgType(), rsp)
 	//
 	//如果接收到的 RPC 请求或响应中，任期号T > currentTerm，那么就令 currentTerm 等于 T，并切换状态为跟随者（5.1 节）
 	if rsp.Term > curTerm {
@@ -63,7 +63,7 @@ func (r *Raft) onVote(m pb.Message) {
 	}
 	if r.State != StateCandidate {
 		//如果已经不是Candidate了，不在乎选票了.
-		log.Debugf("'%d' was leader now.", r.id)
+		debugf("'%d' was leader now.", r.id)
 		return
 	}
 	if false == rsp.VoteGranted {
@@ -95,7 +95,7 @@ func (r *Raft) handleVote(m pb.Message) {
 	var req ReqVote
 	req.fromPbMsg(m)
 
-	log.Debugf("handleVote '%d->%d'(%v):%+v", m.GetFrom(), m.GetTo(), m.GetMsgType(), req)
+	debugf("handleVote '%d->%d'(%v):%+v", m.GetFrom(), m.GetTo(), m.GetMsgType(), req)
 
 	//1.如果term < currentTerm返回 false （5.2 节）
 	if req.Term < curTerm {
@@ -111,7 +111,7 @@ func (r *Raft) handleVote(m pb.Message) {
 		//return
 	}
 	if false == r.RaftLog.reqHasNewLog(&req) {
-		log.Debugf("log was not new")
+		debugf("log was not new")
 		r.doVote(m.GetFrom(), curTerm, false)
 		return
 	}
@@ -119,7 +119,7 @@ func (r *Raft) handleVote(m pb.Message) {
 	//req.Term == curTerm
 	if r.Vote != 0 && r.Vote != req.CandidateId {
 		//已经投票给其它人了。
-		log.Debugf("vote others %d", r.Vote)
+		debugf("vote others %d", r.Vote)
 		r.doVote(req.CandidateId, curTerm, false)
 		return
 	}
@@ -136,7 +136,7 @@ func (rl *RaftLog) reqHasNewLog(req *ReqVote) (isNew bool) {
 	}
 	//check new logs;
 	lastTerm, err := rl.Term(lastIndex)
-	log.Debugf("last(%d:%d)", lastIndex, lastTerm)
+	debugf("last(%d:%d)", lastIndex, lastTerm)
 	if err != nil {
 		log.Errorf("last log term(%d) err:%s", lastIndex, err.Error())
 		return false

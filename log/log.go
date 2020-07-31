@@ -278,3 +278,49 @@ func NewLogger(w io.Writer, prefix string) *Logger {
 	}
 	return &Logger{_log: log.New(w, prefix, LstdFlags), level: level, highlighting: true}
 }
+
+func LogOutput(t LogType, format string, v ...interface{}) {
+	LogOutputDepth(4, t, format, v)
+}
+
+func LogOutputDepth(dep int, t LogType, format string, v ...interface{}) {
+	l := _log
+	if l.level|LogLevel(t) != l.level {
+		return
+	}
+
+	logStr, logColor := LogTypeToString(t)
+	var s string
+	if l.highlighting {
+		s = "\033" + logColor + "m[" + logStr + "] " + fmt.Sprintf(format, v...) + "\033[0m"
+	} else {
+		s = "[" + logStr + "] " + fmt.Sprintf(format, v...)
+	}
+
+	l._log.Output(dep, s)
+}
+
+type PkgType int
+
+const (
+	PT_raft        = 0x1
+	PT_raftStore   = 0x2
+	PT_raftStorage = 0x4
+)
+
+var g_pt PkgType = 0
+
+func AddPkgType(pkg PkgType) {
+	g_pt |= pkg
+}
+
+func init() {
+	AddPkgType(PT_raft)
+}
+
+//this dep = 5;
+func PkgDebugf(pkg PkgType, dep int, format string, v ...interface{}) {
+	if g_pt&pkg != 0 {
+		LogOutputDepth(dep, LOG_DEBUG, format, v...)
+	}
+}

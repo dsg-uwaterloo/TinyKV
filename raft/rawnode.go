@@ -17,7 +17,6 @@ package raft
 import (
 	"errors"
 	"fmt"
-	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -146,7 +145,7 @@ func (rn *RawNode) Step(m pb.Message) error {
 }
 
 func (rn *RawNode) readyState(set, old, newrd *Ready) {
-	log.Debugf("old(%s) new(%s)", old, newrd)
+	debugf("old(%s) new(%s)", old, newrd)
 	r := rn.Raft
 	//check if changed;
 	if false == sameSoftState(old, newrd) {
@@ -204,7 +203,7 @@ func state2str(rd *Ready) string {
 func (rn *RawNode) Ready() (rd Ready) {
 	// Your Code Here (2A).
 	r := rn.Raft
-	log.Debugf("Ready(%s)", r.RaftLog.String())
+	debugf("Ready(%s)", r.RaftLog.String())
 	//soft state;
 	newrd := makeReadyState(r)
 	rn.readyState(&rd, &rn.prevReady, &newrd)
@@ -225,7 +224,7 @@ func (rn *RawNode) Ready() (rd Ready) {
 func (rn *RawNode) HasReady() bool {
 	// Your Code Here (2A).
 	newrd := makeReadyState(rn.Raft)
-	log.Debugf("hashReady:old=%s;new=%s;", state2str(&rn.prevReady), state2str(&newrd))
+	debugf("hashReady:old=%s;new=%s;", state2str(&rn.prevReady), state2str(&newrd))
 	if false == sameSoftState(&newrd, &rn.prevReady) {
 		return true
 	}
@@ -242,7 +241,7 @@ func (rn *RawNode) HasReady() bool {
 // Advance notifies the RawNode that the application has applied and saved progress in the
 // last Ready results.
 func (rn *RawNode) Advance(rd Ready) {
-	log.Debugf("Advance(hard=%+v;soft=%+v)", rd.HardState, rd.SoftState)
+	debugf("Advance(hard=%+v;soft=%+v)", rd.HardState, rd.SoftState)
 	// Your Code Here (2A).
 	rlog := rn.Raft.RaftLog
 	rlog.applied += uint64(len(rd.CommittedEntries))

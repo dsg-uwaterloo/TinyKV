@@ -16,6 +16,7 @@ package raft
 
 import (
 	"fmt"
+	"github.com/pingcap-incubator/tinykv/log"
 	"io"
 	"io/ioutil"
 	"os"
@@ -25,6 +26,10 @@ import (
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
+
+func debugf(format string, v ...interface{}) {
+	log.PkgDebugf(log.PT_raft, 4, format, v...)
+}
 
 func min(a, b uint64) uint64 {
 	if a > b {
