@@ -42,6 +42,16 @@ func ErrRespStaleCommand(term uint64) *raft_cmdpb.RaftCmdResponse {
 	return ErrRespWithTerm(new(util.ErrStaleCommand), term)
 }
 
+func ErrRespNotLeader(regionId uint64, peer *peer) *raft_cmdpb.RaftCmdResponse {
+	lead := peer.LeaderId()
+	peer.getPeerFromCache(lead)
+	notLeader := &util.ErrNotLeader{
+		RegionId: regionId,
+		Leader:   peer.getPeerFromCache(peer.LeaderId()),
+	}
+	return ErrResp(notLeader)
+}
+
 func ErrRespRegionNotFound(regionID uint64) *raft_cmdpb.RaftCmdResponse {
 	return &raft_cmdpb.RaftCmdResponse{
 		Header: &raft_cmdpb.RaftResponseHeader{

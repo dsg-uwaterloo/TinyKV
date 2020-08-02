@@ -158,6 +158,7 @@ func (m *MockSchedulerClient) checkBootstrap() error {
 }
 
 func (m *MockSchedulerClient) PutStore(ctx context.Context, store *metapb.Store) error {
+	debugf("PutStore %+v", store)
 	if err := m.checkBootstrap(); err != nil {
 		return err
 	}
@@ -249,6 +250,7 @@ func (m *MockSchedulerClient) StoreHeartbeat(ctx context.Context, stats *schedul
 }
 
 func (m *MockSchedulerClient) RegionHeartbeat(req *schedulerpb.RegionHeartbeatRequest) error {
+	debugf("RegionHeartbeat %d", req.Leader.GetId())
 	if err := m.checkBootstrap(); err != nil {
 		return err
 	}
@@ -474,6 +476,7 @@ func (m *MockSchedulerClient) findRegion(key []byte) *regionItem {
 }
 
 func (m *MockSchedulerClient) addRegionLocked(region *metapb.Region) {
+	debugf("test log | region-%d start(%x)end(%x)", region.Id, region.StartKey, region.EndKey)
 	m.regionsKey[region.GetId()] = region.GetStartKey()
 	m.regionsRange.ReplaceOrInsert(&regionItem{region: *region})
 }

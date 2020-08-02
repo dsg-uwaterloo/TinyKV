@@ -106,6 +106,7 @@ func partitioner(t *testing.T, cluster *Cluster, ch chan bool, done *int32, unre
 			a[i] = (rand.Int() % 2)
 		}
 		pa := make([][]uint64, 2)
+		//一半/一半分区(0-1 分区.)
 		for i := 0; i < 2; i++ {
 			pa[i] = make([]uint64, 0)
 			for j := 1; j <= cluster.count; j++ {
@@ -215,22 +216,23 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 				clnts[cli] <- j
 			}()
 			last := ""
+			var lastLeader uint64
 			for atomic.LoadInt32(&done_clients) == 0 {
 				if (rand.Int() % 1000) < 500 {
 					key := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", j)
-					value := "x " + strconv.Itoa(cli) + " " + strconv.Itoa(j) + " y"
-					// log.Infof("%d: client new put %v,%v\n", cli, key, value)
-					cluster.MustPut([]byte(key), []byte(value))
+					value := "x " + strconv.Itoa(cli) + " " + strconv.Itoa(j) + " y;"
+					//log.Infof("%d: client new put '%v'(%x),'%v'\n", cli, key, key, value)
+					lastLeader = cluster.MustPutLeader([]byte(key), []byte(value))
 					last = NextValue(last, value)
 					j++
 				} else {
 					start := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", 0)
 					end := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", j)
-					// log.Infof("%d: client new scan %v-%v\n", cli, start, end)
-					values := cluster.Scan([]byte(start), []byte(end))
+					//log.Infof("%d: client new scan '%v'-'%v'\n", cli, start, end)
+					values, leader := cluster.ScanLeader([]byte(start), []byte(end))
 					v := string(bytes.Join(values, []byte("")))
 					if v != last {
-						log.Fatalf("get wrong value, client %v\nwant:%v\ngot: %v\n", cli, last, v)
+						log.Fatalf("get wrong value, client (%v->%d,lastSet<%d,%d>）\nwant:%v\ngot: %v\n", cli, leader, lastLeader, j, last, v)
 					}
 				}
 			}

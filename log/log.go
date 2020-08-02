@@ -280,10 +280,10 @@ func NewLogger(w io.Writer, prefix string) *Logger {
 }
 
 func LogOutput(t LogType, format string, v ...interface{}) {
-	LogOutputDepth(4, t, format, v)
+	LogOutputDepth(4, PT_none, t, format, v)
 }
 
-func LogOutputDepth(dep int, t LogType, format string, v ...interface{}) {
+func LogOutputDepth(dep int, pkt PkgType, t LogType, format string, v ...interface{}) {
 	l := _log
 	if l.level|LogLevel(t) != l.level {
 		return
@@ -292,9 +292,9 @@ func LogOutputDepth(dep int, t LogType, format string, v ...interface{}) {
 	logStr, logColor := LogTypeToString(t)
 	var s string
 	if l.highlighting {
-		s = "\033" + logColor + "m[" + logStr + "] " + fmt.Sprintf(format, v...) + "\033[0m"
+		s = "\033" + logColor + "m[" + pkt.String() + logStr + "] " + fmt.Sprintf(format, v...) + "\033[0m"
 	} else {
-		s = "[" + logStr + "] " + fmt.Sprintf(format, v...)
+		s = "[" + pkt.String() + logStr + "] " + fmt.Sprintf(format, v...)
 	}
 
 	l._log.Output(dep, s)
@@ -303,10 +303,30 @@ func LogOutputDepth(dep int, t LogType, format string, v ...interface{}) {
 type PkgType int
 
 const (
+	PT_none        = 0
 	PT_raft        = 0x1
 	PT_raftStore   = 0x2
 	PT_raftStorage = 0x4
+
+	//
+	PT_test_raftStore = 0x100
 )
+
+func (pt PkgType) String() string {
+	switch pt {
+	case PT_raft:
+		return "<raft>"
+	case PT_raftStore:
+		return "<raft store>"
+	case PT_raftStorage:
+		return "<raft storage>"
+	case PT_test_raftStore:
+		return "<test raft-store>"
+	case PT_none:
+		return "<none>"
+	}
+	return fmt.Sprintf("<unknow-%d>", pt)
+}
 
 var g_pt PkgType = 0
 
@@ -315,12 +335,12 @@ func AddPkgType(pkg PkgType) {
 }
 
 func init() {
-	AddPkgType(PT_raft)
+	//AddPkgType(PT_raft)
 }
 
 //this dep = 5;
 func PkgDebugf(pkg PkgType, dep int, format string, v ...interface{}) {
 	if g_pt&pkg != 0 {
-		LogOutputDepth(dep, LOG_DEBUG, format, v...)
+		LogOutputDepth(dep, pkg, LOG_DEBUG, format, v...)
 	}
 }

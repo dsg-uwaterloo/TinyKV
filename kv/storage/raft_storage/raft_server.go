@@ -178,16 +178,24 @@ func (rs *RaftStorage) Snapshot(stream tinykvpb.TinyKv_SnapshotServer) error {
 
 func (rs *RaftStorage) Start() error {
 	cfg := rs.config
+	// pd(placement driver) 服务器的客户端.
 	schedulerClient, err := scheduler_client.NewClient(strings.Split(cfg.SchedulerAddr, ","), "")
 	if err != nil {
 		return err
 	}
-	rs.raftRouter, rs.raftSystem = raftstore.CreateRaftstore(cfg)
-
+	// resolver，专门负责对store-server的url解析
+	//  一个region下有多高节点(即一个raft集群)，一个节点即一个store(即一个raft节点)，会有一个storeid.
+	//  一个region会有一个regionID进行标识，一个region下会有数据分片——这些信息，都存储在pd-server上.
+	//  所有，根据一个storeID/regionID，就可以去pd-server查找对应的addr信息;
+	//  而有了addr信息，就可以连接store——于是，一个region下，各个store就都可以互相找到addr信息，就可以互相通讯了.
+	//  resolve这里做的事情，就是通过storeID/regionID 解析到对应的addr.
 	rs.resolveWorker = worker.NewWorker("resolver", &rs.wg)
 	resolveSender := rs.resolveWorker.Sender()
 	resolveRunner := newResolverRunner(schedulerClient)
 	rs.resolveWorker.Start(resolveRunner)
+
+	// 创建router, raftSystem(raftStore ,可以理解为raft系统功能实现，所有取名raftSystem???)
+	rs.raftRouter, rs.raftSystem = raftstore.CreateRaftstore(cfg)
 
 	rs.snapManager = snap.NewSnapManager(filepath.Join(cfg.DBPath, "snap"))
 	rs.snapWorker = worker.NewWorker("snap-worker", &rs.wg)

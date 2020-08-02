@@ -199,6 +199,7 @@ type workers struct {
 	wg               *sync.WaitGroup
 }
 
+//router--send->storeState
 type Raftstore struct {
 	ctx        *GlobalContext
 	storeState *storeState

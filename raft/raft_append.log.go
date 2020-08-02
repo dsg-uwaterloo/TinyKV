@@ -72,7 +72,7 @@ func (r *Raft) processHeartBeatRequest(req *ReqHeartbeat, resp *RspHeartbeat) {
 	//2.1 如果有日志，那么要比较日志.
 	localTerm, err := r.RaftLog.Term(req.PrevLogIndex)
 	if err != nil {
-		log.Warnf("term(idx:%d) err:%s", req.PrevLogIndex, err.Error())
+		//log.Warnf("term(idx:%d) err:%s", req.PrevLogIndex, err.Error())
 		return //false
 	}
 	if localTerm != req.PrevLogTerm {

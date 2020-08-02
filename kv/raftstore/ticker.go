@@ -1,6 +1,7 @@
 package raftstore
 
 import (
+	"github.com/pingcap-incubator/tinykv/kv/raftstore/util"
 	"time"
 
 	"github.com/pingcap-incubator/tinykv/kv/config"
@@ -28,6 +29,11 @@ func newTicker(regionID uint64, cfg *config.Config) *ticker {
 	t.schedules[int(PeerTickRaftLogGC)].interval = int64(cfg.RaftLogGCTickInterval / baseInterval)
 	t.schedules[int(PeerTickSplitRegionCheck)].interval = int64(cfg.SplitRegionCheckTickInterval / baseInterval)
 	t.schedules[int(PeerTickSchedulerHeartbeat)].interval = int64(cfg.SchedulerHeartbeatTickInterval / baseInterval)
+	util.RSDebugf("newTicker base(%d)raft(%d)raftLogGC(%d)SplitRegionCheck(%d)SchedulerHeartbeat(%d)",
+		baseInterval, t.schedules[int(PeerTickRaft)].interval,
+		t.schedules[int(PeerTickRaftLogGC)].interval,
+		t.schedules[int(PeerTickSplitRegionCheck)].interval,
+		t.schedules[int(PeerTickSchedulerHeartbeat)].interval)
 	return t
 }
 
@@ -97,6 +103,7 @@ func newTickDriver(baseTickInterval time.Duration, router *router, storeTicker *
 }
 
 func (r *tickDriver) run() {
+	util.RSDebugf("tick running...")
 	timer := time.Tick(r.baseTickInterval)
 	for {
 		select {
@@ -114,6 +121,7 @@ func (r *tickDriver) run() {
 			r.regions[regionID] = struct{}{}
 		}
 	}
+	util.RSDebugf("tick exist...")
 }
 
 func (r *tickDriver) stop() {

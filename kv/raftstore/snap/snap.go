@@ -14,6 +14,7 @@ import (
 	"github.com/Connor1996/badger"
 	"github.com/Connor1996/badger/table"
 
+	rsutil "github.com/pingcap-incubator/tinykv/kv/raftstore/util"
 	"github.com/pingcap-incubator/tinykv/kv/util"
 	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
 	"github.com/pingcap-incubator/tinykv/log"
@@ -374,6 +375,7 @@ func (s *Snap) initForBuilding() error {
 	if err != nil {
 		return err
 	}
+	rsutil.RSDebugf("initForBuilding open s.MetaFile.TmpPath(%s)", s.MetaFile.TmpPath)
 	s.MetaFile.File = file
 	s.holdTmpFiles = true
 	for _, cfFile := range s.CFFiles {
@@ -381,6 +383,7 @@ func (s *Snap) initForBuilding() error {
 		if err != nil {
 			return err
 		}
+		rsutil.RSDebugf("initForBuilding open(%s)", cfFile.TmpPath)
 		cfFile.SstWriter = table.NewExternalTableBuilder(file, nil, badger.DefaultOptions.TableBuilderOptions)
 	}
 	return nil
@@ -478,6 +481,7 @@ func (s *Snap) saveCFFiles() error {
 		cfFile.SstWriter.Close()
 		size, err := util.GetFileSize(cfFile.TmpPath)
 		if err != nil {
+			panic(err)
 			return err
 		}
 		if size > 0 {

@@ -17,6 +17,7 @@ package raft
 import (
 	"errors"
 	"fmt"
+	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -224,11 +225,17 @@ func (rn *RawNode) Ready() (rd Ready) {
 func (rn *RawNode) HasReady() bool {
 	// Your Code Here (2A).
 	newrd := makeReadyState(rn.Raft)
-	debugf("hashReady:old=%s;new=%s;", state2str(&rn.prevReady), state2str(&newrd))
+	//debugf("hashReady:old=%s;new=%s;", state2str(&rn.prevReady), state2str(&newrd))
 	if false == sameSoftState(&newrd, &rn.prevReady) {
+		log.Debugf("softState %d", len(rn.Raft.msgs))
 		return true
 	}
 	if false == sameHardState(&newrd, &rn.prevReady) {
+		log.Debugf("hardState %d", len(rn.Raft.msgs))
+		return true
+	}
+	if len(rn.Raft.msgs) > 0 {
+		log.Debugf("messages")
 		return true
 	}
 	rlog := rn.Raft.RaftLog
@@ -272,4 +279,8 @@ func (rn *RawNode) GetProgress() map[uint64]Progress {
 // TransferLeader tries to transfer leadership to the given transferee.
 func (rn *RawNode) TransferLeader(transferee uint64) {
 	_ = rn.Raft.Step(pb.Message{MsgType: pb.MessageType_MsgTransferLeader, From: transferee})
+}
+
+func (rn *RawNode) RaftID() uint64 {
+	return rn.Raft.id
 }

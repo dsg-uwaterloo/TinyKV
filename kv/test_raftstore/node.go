@@ -72,7 +72,7 @@ func (t *MockTransport) Send(msg *raft_serverpb.RaftMessage) error {
 
 	for _, filter := range t.filters {
 		if !filter.Before(msg) {
-			return errors.New(fmt.Sprintf("message %+v is dropped", msg))
+			return errors.New(fmt.Sprintf("message %+v is dropped", raftstore.RaftMsg2Str(msg)))
 		}
 	}
 
@@ -200,6 +200,7 @@ func (c *NodeSimulator) GetStoreIds() []uint64 {
 }
 
 func (c *NodeSimulator) CallCommandOnStore(storeID uint64, request *raft_cmdpb.RaftCmdRequest, timeout time.Duration) (*raft_cmdpb.RaftCmdResponse, *badger.Txn) {
+
 	c.RLock()
 	router := c.trans.routers[storeID]
 	if router == nil {

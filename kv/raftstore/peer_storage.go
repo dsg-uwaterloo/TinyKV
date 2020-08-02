@@ -306,6 +306,15 @@ func ClearMeta(engines *engine_util.Engines, kvWB, raftWB *engine_util.WriteBatc
 // never be committed
 func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.WriteBatch) error {
 	// Your Code Here (2B).
+	lastIndex, err := ps.LastIndex()
+	if err != nil {
+		return err
+	}
+	for idx, ent := range entries {
+		next := lastIndex + uint64(idx)
+		logKey := meta.RaftLogKey(ps.region.Id, next)
+		raftWB.SetMeta(logKey, &ent)
+	}
 	return nil
 }
 
@@ -329,6 +338,30 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, error) {
 	// Hint: you may call `Append()` and `ApplySnapshot()` in this function
 	// Your Code Here (2B/2C).
+	//TODO : update kv by snapshot;
+	//
+	var wbraft engine_util.WriteBatch
+	//set state;
+	hs := ready.HardState
+	tmp := eraftpb.HardState{
+		Vote:   hs.Vote,
+		Term:   hs.Term,
+		Commit: hs.Commit,
+	}
+	if !raft.IsEmptyHardState(tmp) {
+		ps.raftState.HardState = &tmp
+	}
+	//ss := ready.SoftState
+	wbraft.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
+	//engine_util.PutMeta(ps.Engines.Raft, meta.RaftStateKey(ps.region.Id), ps.raftState)
+	//TODO : soft state;
+	//store the raft logs;
+	err := ps.Append(ready.Entries, &wbraft)
+	if err != nil {
+		return nil, err
+	}
+	ps.Engines.WriteRaft(&wbraft)
+
 	return nil, nil
 }
 

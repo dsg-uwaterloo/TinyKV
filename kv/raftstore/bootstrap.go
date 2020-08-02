@@ -2,6 +2,7 @@ package raftstore
 
 import (
 	"bytes"
+	"github.com/pingcap-incubator/tinykv/log"
 
 	"github.com/Connor1996/badger"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/meta"
@@ -128,6 +129,7 @@ func writeInitialRaftState(raftWB *engine_util.WriteBatch, regionID uint64) {
 }
 
 func ClearPrepareBootstrap(engines *engine_util.Engines, regionID uint64) error {
+	log.Info("ClearPrepareBootstrap regionID(%d)", regionID)
 	err := engines.Raft.Update(func(txn *badger.Txn) error {
 		return txn.Delete(meta.RaftStateKey(regionID))
 	})

@@ -16,7 +16,6 @@ package raft
 
 import (
 	"fmt"
-	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"strings"
 )
@@ -86,12 +85,12 @@ func newLog(storage Storage) *RaftLog {
 		copy(rl.entries, ents)
 		debugf("load from storage %d entries", len(ents))
 	}
-	sp, err := storage.Snapshot()
-	if err != nil {
-		//
-	} else {
-		rl.setMD(sp.GetMetadata())
-	}
+	//sp, err := storage.Snapshot()
+	//if err != nil {
+	//	//
+	//} else {
+	//	rl.setMD(sp.GetMetadata())
+	//}
 	return rl
 }
 
@@ -132,17 +131,23 @@ func (l *RaftLog) maybeCompact() {
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
+	if len(l.entries) == 0 {
+		return []pb.Entry{}
+	}
 	pos, err := l.pos(l.stabled + 1)
 	if err == nil {
 		return dupEntries(l.entries[pos:])
 	}
-	log.Warn("no entries ", err)
+	//log.Warnf("no entries %v", err)
 	return []pb.Entry{}
 }
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
+	if len(l.entries) == 0 {
+		return []pb.Entry{}
+	}
 	cpos, _ := l.pos(l.committed)
 	start, err := l.pos(l.applied + 1)
 	if err != nil { //如果报错，说明这个位置没有数据，那么直接返回空。

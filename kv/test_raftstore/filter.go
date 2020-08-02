@@ -11,6 +11,7 @@ type Filter interface {
 	After()
 }
 
+//分区(s1,s2),s1 和 s2 不能互通.
 type PartitionFilter struct {
 	s1 []uint64
 	s2 []uint64
@@ -36,6 +37,7 @@ func (f *PartitionFilter) Before(msg *rspb.RaftMessage) bool {
 
 func (f *PartitionFilter) After() {}
 
+//丢包率 10%。
 type DropFilter struct{}
 
 func (f *DropFilter) Before(msg *rspb.RaftMessage) bool {

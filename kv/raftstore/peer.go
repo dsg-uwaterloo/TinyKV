@@ -116,7 +116,7 @@ func NewPeer(storeId uint64, cfg *config.Config, engines *engine_util.Engines, r
 	if meta.GetId() == util.InvalidID {
 		return nil, fmt.Errorf("invalid peer id")
 	}
-	tag := fmt.Sprintf("[region %v] %v", region.GetId(), meta.GetId())
+	tag := fmt.Sprintf("[region %v %v]", region.GetId(), meta.GetId())
 
 	ps, err := NewPeerStorage(engines, region, regionSched, tag)
 	if err != nil {
@@ -346,6 +346,7 @@ func (p *peer) HeartbeatScheduler(ch chan<- worker.Task) {
 	clonedRegion := new(metapb.Region)
 	err := util.CloneMsg(p.Region(), clonedRegion)
 	if err != nil {
+		log.Warnf("HeartbeatScheduler err:%s", err.Error())
 		return
 	}
 	ch <- &runner.SchedulerRegionHeartbeatTask{
@@ -389,4 +390,28 @@ func (p *peer) sendRaftMessage(msg eraftpb.Message, trans Transport) error {
 	}
 	sendMsg.Message = &msg
 	return trans.Send(sendMsg)
+}
+
+//--------------------------------maybe need to add mutex-------------------------------------------
+func (nd *peer) pushCallback(rmw *RaftMsgWrapper, cb *message.Callback) {
+	msg := rmw.raftmsg
+	nd.proposals = append(nd.proposals, &proposal{
+		rmw.MsgIdx,
+		msg.GetHeader().GetTerm(),
+		cb,
+	})
+}
+
+func (nd *peer) popCallback(rmw *RaftMsgWrapper) (cb CbWrapper) {
+	lastIdx := len(nd.proposals) - 1
+	for idx, p := range nd.proposals {
+		if p.index == rmw.MsgIdx &&
+			p.term == rmw.raftmsg.GetHeader().GetTerm() {
+			//swap;
+			cb.Callback = p.cb
+			nd.proposals[idx] = nd.proposals[lastIdx]
+			nd.proposals = nd.proposals[:lastIdx]
+		}
+	}
+	return cb
 }

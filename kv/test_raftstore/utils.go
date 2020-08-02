@@ -14,6 +14,13 @@ import (
 	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_cmdpb"
 )
 
+func init() {
+	log.AddPkgType(log.PT_test_raftStore)
+}
+func debugf(fmt string, v ...interface{}) {
+	log.PkgDebugf(log.PT_test_raftStore, 4, fmt, v...)
+}
+
 func SleepMS(ms int64) {
 	time.Sleep(time.Duration(ms) * time.Millisecond)
 }
