@@ -300,8 +300,8 @@ func (r *Raft) becomeLeader() {
 		pr.Match = r.RaftLog.LastIndex()
 		pr.Next = r.RaftLog.LastIndex() + 1 //初始化为领导人最后索引值加一
 	}
-	log.Infof("%d become to leader(%d)", r.id, r.Term)
-	//log.Errorf("%d become to leader(%d)", r.id, r.Term)
+	log.Infof("%d become to leader: term(%d)index(%d)", r.id, r.Term, r.RaftLog.LastIndex())
+	//log.Warnf("%d become to leader(%d)last(%d)raftLog%s", r.id, r.Term, r.RaftLog.LastIndex(), r.RaftLog.String())
 	//TODO : check - 论文说，每次选举为leader，都会立马发送一条空消息（心跳消息）；但是，这里实现，似乎说data为空都append消息。
 	r.Step(pb.Message{From: 0, To: 0, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{}}})
 	//r.Step(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgBeat})
@@ -336,23 +336,23 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	rlog := r.RaftLog
 	if len(rlog.entries) > 0 {
 		//通常快照会包含没有在接收者日志中存在的信息。在这种情况下，跟随者丢弃其整个日志；它全部被快照取代，并且可能包含与快照冲突的未提交条目。
-		pos, err := rlog.pos(md.GetIndex())
-		switch err {
-		case ErrUnavailableEmpty:
-			panic(err)
-		case ErrUnavailableBig:
-			//drop logs;
-			rlog.entries = []pb.Entry{}
-		case ErrUnavailableSmall: //如果接收到的快照是自己日志的前面部分（由于网络重传或者错误），那么被快照包含的条目将会被全部删除，
-		//do nothing;drop this message;
-		default: //nil,但是快照后面的条目仍然有效，必须保留。
-			//drop [start:pos+1)
-			if pos+1 == uint64(len(rlog.entries)) {
-				rlog.entries = []pb.Entry{}
-			} else {
-				rlog.entries = rlog.entries[pos+1:]
-			}
-		}
+		//pos, err := rlog.pos(md.GetIndex())
+		//switch err {
+		//case ErrUnavailableEmpty:
+		//	panic(err)
+		//case ErrUnavailableBig:
+		//	//drop logs;
+		//	rlog.entries = []pb.Entry{}
+		//case ErrUnavailableSmall: //如果接收到的快照是自己日志的前面部分（由于网络重传或者错误），那么被快照包含的条目将会被全部删除，
+		////do nothing;drop this message;
+		//default: //nil,但是快照后面的条目仍然有效，必须保留。
+		//	//drop [start:pos+1)
+		//	if pos+1 == uint64(len(rlog.entries)) {
+		//		rlog.entries = []pb.Entry{}
+		//	} else {
+		//		rlog.entries = rlog.entries[pos+1:]
+		//	}
+		//}
 	}
 	//
 	if rlog.committed <= md.Index {
@@ -380,7 +380,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	if r.Term < md.Term {
 		r.Term = md.Term
 	}
-	//change stte;
+	//change state;
 	r.becomeFollower(r.Term, m.GetFrom())
 	//
 	r.sendPb(m.GetFrom(), resp)

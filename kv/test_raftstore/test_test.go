@@ -54,20 +54,20 @@ func NextValue(prev string, val string) string {
 
 // check that for a specific client all known appends are present in a value,
 // and in order
-func checkClntAppends(t *testing.T, clnt int, v string, count int) {
+func checkClntAppends(t *testing.T, clnt int, v string, count int, lead uint64) {
 	lastoff := -1
 	for j := 0; j < count; j++ {
 		wanted := "x " + strconv.Itoa(clnt) + " " + strconv.Itoa(j) + " y"
 		off := strings.Index(v, wanted)
 		if off < 0 {
-			t.Fatalf("%v missing element %v in Append result %v", clnt, wanted, v)
+			t.Fatalf("'%d->%d' missing element %v in Append result %v", clnt, lead, wanted, v)
 		}
 		off1 := strings.LastIndex(v, wanted)
 		if off1 != off {
-			t.Fatalf("duplicate element %v in Append result", wanted)
+			t.Fatalf("'%d->%d' duplicate element %v in Append result", clnt, lead, wanted)
 		}
 		if off <= lastoff {
-			t.Fatalf("wrong order for element %v in Append result", wanted)
+			t.Fatalf("'%d->%d' wrong order for element %v in Append result", clnt, lead, wanted)
 		}
 		lastoff = off
 	}
@@ -116,7 +116,7 @@ func partitioner(t *testing.T, cluster *Cluster, ch chan bool, done *int32, unre
 			}
 		}
 		cluster.ClearFilters()
-		log.Infof("partition: %v, %v", pa[0], pa[1])
+		log.Debugf("partition: %v, %v", pa[0], pa[1])
 		cluster.AddFilter(&PartitionFilter{
 			s1: pa[0],
 			s2: pa[1],
@@ -259,6 +259,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			// have submitted a request in a minority.  That request
 			// won't return until that server discovers a new term
 			// has started.
+			log.Warnf("ClearFilters")
 			cluster.ClearFilters()
 			// wait for a while so that we have a new term
 			time.Sleep(electionTimeout)
@@ -291,9 +292,9 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			// }
 			start := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", 0)
 			end := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", j)
-			values := cluster.Scan([]byte(start), []byte(end))
+			values, leader := cluster.ScanLeader([]byte(start), []byte(end))
 			v := string(bytes.Join(values, []byte("")))
-			checkClntAppends(t, cli, v, j)
+			checkClntAppends(t, cli, v, j, leader)
 
 			for k := 0; k < j; k++ {
 				key := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", k)

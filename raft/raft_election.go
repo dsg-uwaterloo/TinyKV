@@ -45,7 +45,6 @@ func (r *Raft) doVote(to, curTerm uint64, voteGrant bool) {
 	}
 	if voteGrant {
 		r.Vote = to
-		r.Lead = to
 	}
 	r.send(to, rsp)
 }

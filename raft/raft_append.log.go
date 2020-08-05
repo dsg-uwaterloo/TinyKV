@@ -110,9 +110,9 @@ func (r *Raft) processEntries(entries []*pb.Entry) bool {
 		if rlog.entries[start].Term != entries[inpos].Term {
 			//delete the conflict position logs;
 			rlog.entries = rlog.entries[:start]
-			//替换之前对日志，所以stabled需要更新.
-			if rlog.stabled > rlog.LastIndex() {
-				rlog.stabled = rlog.LastIndex()
+			if rlog.stabled > start {
+				//日志有冲突，那么就需要重新saveLog
+				rlog.stabled = start
 			}
 			break //(start,inpos) is conflict position;
 		} else {
@@ -254,7 +254,7 @@ func (r *Raft) onAppendEntries(m pb.Message) {
 					if r.RaftLog.committed < logidx {
 						r.RaftLog.committed = logidx
 						//update the commit id to follower;
-						log.PkgDebugf(log.PT_raft, 3, "update commit %d", r.RaftLog.committed)
+						debugf("update commit %d", r.RaftLog.committed)
 						r.broadcastAppend()
 					}
 				}

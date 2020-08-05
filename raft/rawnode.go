@@ -163,43 +163,6 @@ func (rn *RawNode) readyState(set, old, newrd *Ready) {
 	}
 }
 
-func makeReadyState(r *Raft) (rd Ready) {
-	rd.SoftState = &SoftState{
-		Lead:      r.Lead,
-		RaftState: r.State,
-	}
-	//hardstate;
-	rd.HardState.Commit = r.RaftLog.committed
-	rd.HardState.Term = r.Term
-	rd.HardState.Vote = r.Vote
-	return
-}
-
-func sameSoftState(r *Ready, b *Ready) bool {
-	return r.Lead == b.Lead && r.RaftState == b.RaftState
-}
-
-func sameHardState(r *Ready, b *Ready) bool {
-	return r.Vote == b.Vote && r.Term == b.Term && r.Commit == b.Commit
-}
-
-func emptyHardState(r *Ready) bool {
-	hs := r.HardState
-	return hs.Vote == 0 && hs.Commit == 0 && hs.Term == 0
-}
-
-func emptySoftState(r *Ready) bool {
-	ss := r.SoftState
-	if ss == nil {
-		return true
-	}
-	return ss.Lead == 0 && ss.RaftState == 0
-}
-
-func state2str(rd *Ready) string {
-	return fmt.Sprintf("softState=%+v;HardState=%+v.", rd.SoftState, rd.HardState)
-}
-
 // Ready returns the current point-in-time state of this RawNode.
 func (rn *RawNode) Ready() (rd Ready) {
 	// Your Code Here (2A).
@@ -283,4 +246,42 @@ func (rn *RawNode) TransferLeader(transferee uint64) {
 
 func (rn *RawNode) RaftID() uint64 {
 	return rn.Raft.id
+}
+
+//----------------------------------------------------
+func makeReadyState(r *Raft) (rd Ready) {
+	rd.SoftState = &SoftState{
+		Lead:      r.Lead,
+		RaftState: r.State,
+	}
+	//hardstate;
+	rd.HardState.Commit = r.RaftLog.committed
+	rd.HardState.Term = r.Term
+	rd.HardState.Vote = r.Vote
+	return
+}
+
+func sameSoftState(r *Ready, b *Ready) bool {
+	return r.Lead == b.Lead && r.RaftState == b.RaftState
+}
+
+func sameHardState(r *Ready, b *Ready) bool {
+	return r.Vote == b.Vote && r.Term == b.Term && r.Commit == b.Commit
+}
+
+func emptyHardState(r *Ready) bool {
+	hs := r.HardState
+	return hs.Vote == 0 && hs.Commit == 0 && hs.Term == 0
+}
+
+func emptySoftState(r *Ready) bool {
+	ss := r.SoftState
+	if ss == nil {
+		return true
+	}
+	return ss.Lead == 0 && ss.RaftState == 0
+}
+
+func state2str(rd *Ready) string {
+	return fmt.Sprintf("softState=%+v;HardState=%+v.", rd.SoftState, rd.HardState)
 }

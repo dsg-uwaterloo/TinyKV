@@ -246,7 +246,7 @@ func StringToLogLevel(level string) LogLevel {
 	case "info":
 		return LOG_LEVEL_INFO
 	}
-	return LOG_LEVEL_ALL
+	return LOG_LEVEL_ERROR
 }
 
 func LogTypeToString(t LogType) (string, string) {

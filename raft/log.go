@@ -16,6 +16,7 @@ package raft
 
 import (
 	"fmt"
+	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"strings"
 )
@@ -74,7 +75,7 @@ func newLog(storage Storage) *RaftLog {
 	rl.committed = first - 1
 	rl.applied = first - 1
 	rl.stabled = last
-	debugf("first(%d)last(%d)", first, last)
+	log.Warnf("first(%d)last(%d)", first, last)
 	if last >= first { //not empty
 		ents, err := storage.Entries(first, last+1)
 		if err != nil {
@@ -101,22 +102,18 @@ func (rl *RaftLog) setMD(md *pb.SnapshotMetadata) {
 	rl.md.ConfState.Nodes = append(rl.md.ConfState.Nodes, md.GetConfState().GetNodes()...)
 }
 
-var ErrUnavailableEmpty = fmt.Errorf("%s (empty entries)", ErrUnavailable.Error())
-var ErrUnavailableSmall = fmt.Errorf("%s (index is too small)", ErrUnavailable.Error())
-var ErrUnavailableBig = fmt.Errorf("%s (index is out of range)", ErrUnavailable.Error())
-
 func (l *RaftLog) pos(idx uint64) (uint64, error) {
 	elen := len(l.entries)
 	if elen == 0 {
-		return 0, ErrUnavailableEmpty
+		return 0, ErrCompacted
 	}
 	e := l.entries[0]
 	if idx < e.Index {
-		return 0, ErrUnavailableSmall
+		return 0, ErrCompacted
 	}
 	off := idx - e.Index
 	if off >= uint64(elen) {
-		return 0, ErrUnavailableBig
+		return 0, ErrUnavailable
 	}
 	return off, nil
 }

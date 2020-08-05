@@ -113,6 +113,7 @@ func (ps *PeerStorage) Entries(low, high uint64) ([]eraftpb.Entry, error) {
 		}
 		// May meet gap or has been compacted.
 		if entry.Index != nextIndex {
+			log.Errorf("entry.Index(%d) != nextIndex(%d)", entry.Index, nextIndex)
 			break
 		}
 		nextIndex++
@@ -123,6 +124,13 @@ func (ps *PeerStorage) Entries(low, high uint64) ([]eraftpb.Entry, error) {
 		return buf, nil
 	}
 	// Here means we don't fetch enough entries.
+	blen := len(buf)
+	if blen > 0 {
+		last := buf[blen-1]
+		log.Errorf("buflen=%d(%d,%d)", blen, last.Term, last.Index)
+	} else {
+		log.Errorf("buf is emtpy")
+	}
 	return nil, raft.ErrUnavailable
 }
 
@@ -310,9 +318,16 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 	if err != nil {
 		return err
 	}
-	for idx, ent := range entries {
-		next := lastIndex + uint64(idx)
-		logKey := meta.RaftLogKey(ps.region.Id, next)
+	lastIndex++
+	//rs := ps.raftState
+	for _, ent := range entries {
+		//
+		//next := lastIndex + uint64(idx)
+		//if next != ent.Index {
+		//	panic(fmt.Sprintf("%s next(%d) != ent.Index(%d);len(ents)=%d",
+		//		ps.Tag, next, ent.Index, len(entries)))
+		//}
+		logKey := meta.RaftLogKey(ps.region.Id, ent.Index)
 		raftWB.SetMeta(logKey, &ent)
 	}
 	return nil
@@ -338,9 +353,15 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, error) {
 	// Hint: you may call `Append()` and `ApplySnapshot()` in this function
 	// Your Code Here (2B/2C).
-	//TODO : update kv by snapshot;
-	//
-	var wbraft engine_util.WriteBatch
+	//save entries;
+	var raftwb engine_util.WriteBatch
+	err := ps.Append(ready.Entries, &raftwb)
+	if err != nil {
+		log.Errorf("SaveReadyState Append err:%s", err.Error())
+		return nil, err
+	}
+	//raftwb.MustWriteToDB(ps.Engines.Raft)
+	//raftwb.Reset()
 	//set state;
 	hs := ready.HardState
 	tmp := eraftpb.HardState{
@@ -348,19 +369,36 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 		Term:   hs.Term,
 		Commit: hs.Commit,
 	}
+	doupdate := false
 	if !raft.IsEmptyHardState(tmp) {
+		doupdate = true
 		ps.raftState.HardState = &tmp
 	}
-	//ss := ready.SoftState
-	wbraft.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
-	//engine_util.PutMeta(ps.Engines.Raft, meta.RaftStateKey(ps.region.Id), ps.raftState)
-	//TODO : soft state;
-	//store the raft logs;
-	err := ps.Append(ready.Entries, &wbraft)
+	//
+	elen := len(ready.Entries)
+	if elen > 0 {
+		doupdate = true
+		last := ready.Entries[elen-1]
+		ps.raftState.LastIndex = last.Index
+		ps.raftState.LastTerm = last.Term
+	}
+	if doupdate {
+		err = raftwb.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
+		if err != nil {
+			log.Errorf("SaveReadyState SetMeta err:%s", err.Error())
+			return nil, err
+		}
+	}
+	//flush；
+	err = raftwb.WriteToDB(ps.Engines.Raft)
 	if err != nil {
+		log.Errorf("SaveReadyState WriteToDB err:%s", err.Error())
 		return nil, err
 	}
-	ps.Engines.WriteRaft(&wbraft)
+	//if elen > 0 {
+	//	log.Warnf("%s write to db %d,%d:%d.", ps.Tag, elen, ps.raftState.LastTerm, ps.raftState.LastIndex)
+	//}
+	//TODO : update kv by snapshot;
 
 	return nil, nil
 }

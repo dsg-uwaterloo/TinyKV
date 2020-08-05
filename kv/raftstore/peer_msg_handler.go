@@ -140,7 +140,8 @@ func (d *peerMsgHandler) saveRaftLog(rd *raft.Ready) {
 	if len(rd.Entries) == 0 {
 		return
 	}
-	util.RSDebugf("saveRaftLog entries(%d)", len(rd.Entries))
+	ent0 := rd.Entries[0]
+	util.RSDebugf("%s saveRaftLog entries(%d:%d;%d)", d.Tag, ent0.Term, ent0.Index, len(rd.Entries))
 	var raftwb engine_util.WriteBatch
 	err := d.peer.peerStorage.Append(rd.Entries, &raftwb)
 	if err != nil {
@@ -258,6 +259,7 @@ func (d *peerMsgHandler) processEntry(ent *eraftpb.Entry) {
 			wb.SetCF(put.GetCf(), put.GetKey(), put.GetValue())
 			resps[idx].Put = &raft_cmdpb.PutResponse{}
 			util.RSDebugf("%s SetCF(%s,%s)='%s'", d.Tag, put.GetCf(), string(put.GetKey()), string(put.GetValue()))
+			//log.Warnf("%s SetCF(%s,%s)='%s'", d.Tag, put.GetCf(), string(put.GetKey()), string(put.GetValue()))
 		case raft_cmdpb.CmdType_Delete:
 			del := req.GetDelete()
 			wb.DeleteCF(del.GetCf(), del.GetKey())
@@ -291,13 +293,17 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	if !raftGroup.HasReady() {
 		return
 	}
+	//1.stabled;
+	//d.saveRaftLog(&rd)
 	util.RSDebugf("HandleRaftReady(%s)", d.peer.Tag)
 	rd := raftGroup.Ready()
-	//1.stabled;
-	d.saveRaftLog(&rd)
+	_, err := d.peerStorage.SaveReadyState(&rd)
+	if err != nil {
+		panic(err)
+	}
+	//3.processSnapshot;
 	//2.send msg to peers;
 	d.sendRaftMsg(&rd)
-	//3.processSnapshot;
 	//4.apply;
 	if len(rd.CommittedEntries) > 0 {
 		util.RSDebugf("%s HandleRaftReady apply entries(%d)", d.Tag, len(rd.CommittedEntries))
