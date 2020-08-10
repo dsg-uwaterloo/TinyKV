@@ -55,7 +55,7 @@ type RaftLog struct {
 	pendingSnapshot *pb.Snapshot
 
 	// Your Data Here (2A).
-	md pb.SnapshotMetadata
+	prevEntry pb.Entry
 }
 
 // newLog returns log using the given storage. It recovers the log
@@ -85,21 +85,20 @@ func newLog(storage Storage) *RaftLog {
 		rl.entries = make([]pb.Entry, len(ents))
 		copy(rl.entries, ents)
 		debugf("load from storage %d entries", len(ents))
+	} else {
+		if last > 0 {
+			rl.prevEntry.Index = last
+			rl.prevEntry.Term, _ = rl.storage.Term(last)
+		}
 	}
-	//sp, err := storage.Snapshot()
-	//if err != nil {
-	//	//
-	//} else {
-	//	rl.setMD(sp.GetMetadata())
-	//}
+	sp, err := storage.Snapshot()
+	if err != nil {
+		//
+	} else {
+		rl.prevEntry.Index = sp.GetMetadata().GetIndex()
+		rl.prevEntry.Term = sp.GetMetadata().GetTerm()
+	}
 	return rl
-}
-
-func (rl *RaftLog) setMD(md *pb.SnapshotMetadata) {
-	rl.md.Index = md.GetIndex()
-	rl.md.Term = md.GetTerm()
-	rl.md.ConfState = &pb.ConfState{}
-	rl.md.ConfState.Nodes = append(rl.md.ConfState.Nodes, md.GetConfState().GetNodes()...)
 }
 
 func (l *RaftLog) pos(idx uint64) (uint64, error) {
@@ -142,13 +141,22 @@ func (l *RaftLog) unstableEntries() []pb.Entry {
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
+	if l.committed < l.applied {
+		panic(fmt.Sprintf("nextEnts,commit=%d;applied=%d.", l.committed, l.applied))
+	}
+	if l.committed == l.applied {
+		return []pb.Entry{}
+	}
 	if len(l.entries) == 0 {
 		return []pb.Entry{}
 	}
-	cpos, _ := l.pos(l.committed)
+	cpos, err := l.pos(l.committed)
+	if err != nil {
+		panic(fmt.Sprintf("nextEnts,commit=%d;applied=%d,len=%d;err:%s", l.committed, l.applied, len(l.entries), err.Error()))
+	}
 	start, err := l.pos(l.applied + 1)
 	if err != nil { //如果报错，说明这个位置没有数据，那么直接返回空。
-		return dupEntries(ents)
+		panic(fmt.Sprintf("nextEnts,commit=%d;applied=%d,len=%d;err:%s", l.committed, l.applied, len(l.entries), err.Error()))
 	}
 	// [,)
 	return dupEntries(l.entries[start : cpos+1])
@@ -161,7 +169,8 @@ func (l *RaftLog) LastIndex() uint64 {
 	if elen > 0 {
 		return l.entries[elen-1].Index
 	}
-	return l.md.GetIndex()
+	idx, _ := l.storage.LastIndex()
+	return idx
 }
 
 // Term return the term of the entry in the given index
@@ -169,11 +178,12 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
 	pos, err := l.pos(i)
 	if err != nil {
-		//if err == ErrUnavailableSmall {
-		if i == l.md.GetIndex() {
-			return l.md.GetTerm(), nil
+		if err == ErrCompacted {
+			if i == l.prevEntry.Index {
+				return l.prevEntry.Term, nil
+			}
+			return 0, err
 		}
-		//}
 		return 0, err
 	}
 	return l.entries[pos].Term, nil

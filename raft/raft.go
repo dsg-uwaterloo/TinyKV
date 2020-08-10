@@ -365,7 +365,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	} else {
 		log.Warnf("logic error:applied(%d)> md.Index(%d)", rlog.applied, md.Index)
 	}
-	rlog.setMD(md)
+	//rlog.setMD(md)
 	//set nodes;
 	if r.State == StateLeader {
 		log.Warnf("node(%d) was leader!", r.id)
@@ -419,7 +419,7 @@ func (r *Raft) send(to uint64, m message) {
 
 func (r *Raft) sendSnapshot(to uint64) {
 	var sp pb.Snapshot
-	sp.Metadata = &r.RaftLog.md
+	//sp.Metadata = &r.RaftLog.md
 	msg := pb.Message{
 		MsgType:  pb.MessageType_MsgSnapshot,
 		From:     r.id,
