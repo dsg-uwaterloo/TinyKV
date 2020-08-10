@@ -174,9 +174,11 @@ func newRaft(c *Config) *Raft {
 	r := new(Raft)
 	//init raft-log;
 	r.RaftLog = newLog(c.Storage)
-	r.RaftLog.applied = c.Applied
-	if r.RaftLog.committed < c.Applied {
-		r.RaftLog.committed = c.Applied
+	if c.Applied > 0 {
+		r.RaftLog.applied = c.Applied
+		if r.RaftLog.committed < c.Applied {
+			r.RaftLog.committed = c.Applied
+		}
 	}
 	//others;
 	r.id = c.ID
@@ -215,7 +217,12 @@ func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
 	var req ReqAppend
 	pr := r.Prs[to]
-	if false == r.makeHeartbeat(pr, &req.ReqHeartbeat) {
+	err := r.makeHeartbeat(pr, &req.ReqHeartbeat)
+	if err != nil {
+		if err == ErrCompacted {
+			r.sendSnapshot(to)
+		}
+		log.Warnf("makeHeartbeat(%d) error:%s", pr.Match, err.Error())
 		return false
 	}
 	//get entries;
@@ -234,8 +241,12 @@ func (r *Raft) sendAppend(to uint64) bool {
 func (r *Raft) sendHeartbeat(to uint64) {
 	// Your Code Here (2A).
 	var req ReqHeartbeat
-	if r.makeHeartbeat(r.Prs[to], &req) {
+	pr := r.Prs[to]
+	err := r.makeHeartbeat(pr, &req)
+	if err == nil {
 		r.send(to, &req)
+	} else {
+		log.Warnf("makeHeartbeat(%d,%v) error:%s", to, pr, err.Error())
 	}
 }
 
@@ -318,72 +329,77 @@ func (r *Raft) Step(m pb.Message) error {
 	return r.handleRemote(m)
 }
 
+func snap2str(m *pb.Message) string {
+	sp := m.GetSnapshot()
+	if sp == nil {
+		return fmt.Sprintf(`'%d -> %d' %v snapshot nil`, m.GetFrom(), m.GetTo(), m.GetMsgType())
+	}
+	md := sp.GetMetadata()
+	if md == nil {
+		return fmt.Sprintf(`'%d -> %d' %v snapshot{ data {%d} metadata nil}`, m.GetFrom(), m.GetTo(), m.GetMsgType(), len(sp.GetData()))
+	}
+	return fmt.Sprintf(`'%d -> %d' %v snapshot{ data {%d} metadata {%+v}}`, m.GetFrom(), m.GetTo(), m.GetMsgType(), len(sp.GetData()), md)
+}
+
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
-	// Your Code Here (2C).
-	debugf("handleSnapshot-%d '%d->%d'(%v):%+v", r.id, m.GetFrom(), m.GetTo(), m.GetMsgType(), m.GetSnapshot().GetMetadata())
-	var resp pb.Message
-	resp.Term = r.Term
-	to := m.GetFrom()
-	//如果term < currentTerm就立即回复
-	if m.GetTerm() < r.Term {
-		r.sendPb(to, resp)
+	//do check;
+	if m.GetSnapshot() == nil {
+		log.Warnf("handleSnapshot %s", snap2str(&m))
+	}
+	if m.GetSnapshot().GetMetadata() == nil {
+		log.Warnf("handleSnapshot %s", snap2str(&m))
+	}
+	debugf("handleSnapshot %s", snap2str(&m))
+	//term	领导人的任期号
+	//leaderId	领导人的 Id，以便于跟随者重定向请求
+	//lastIncludedIndex	快照中包含的最后日志条目的索引值
+	//lastIncludedTerm	快照中包含的最后日志条目的任期号
+	//offset	分块在快照中的字节偏移量
+	//data[]	从偏移量开始的快照分块的原始字节
+	//done	如果这是最后一个分块则为 true
+	term := m.GetTerm()
+	leaderId := m.GetFrom()
+	md := m.GetSnapshot().Metadata
+	lastIndex := md.GetIndex()
+	//lastTerm := md.GetTerm()
+	//data := m.GetSnapshot().GetData()
+	//1-如果term < currentTerm就立即回复
+	var rsp pb.Message
+	rsp.To = m.GetFrom()
+	rsp.Term = r.Term
+	if term < r.Term {
+		r.sendPb(rsp.To, rsp)
 		return
 	}
-	//check raftlog ;
-	sp := m.GetSnapshot()
-	md := sp.GetMetadata()
-	rlog := r.RaftLog
-	if len(rlog.entries) > 0 {
-		//通常快照会包含没有在接收者日志中存在的信息。在这种情况下，跟随者丢弃其整个日志；它全部被快照取代，并且可能包含与快照冲突的未提交条目。
-		//pos, err := rlog.pos(md.GetIndex())
-		//switch err {
-		//case ErrUnavailableEmpty:
-		//	panic(err)
-		//case ErrUnavailableBig:
-		//	//drop logs;
-		//	rlog.entries = []pb.Entry{}
-		//case ErrUnavailableSmall: //如果接收到的快照是自己日志的前面部分（由于网络重传或者错误），那么被快照包含的条目将会被全部删除，
-		////do nothing;drop this message;
-		//default: //nil,但是快照后面的条目仍然有效，必须保留。
-		//	//drop [start:pos+1)
-		//	if pos+1 == uint64(len(rlog.entries)) {
-		//		rlog.entries = []pb.Entry{}
-		//	} else {
-		//		rlog.entries = rlog.entries[pos+1:]
-		//	}
-		//}
+	if lastIndex < r.RaftLog.LastIndex() {
+		log.Error("logic error:snap.lastIndex(%d)<local.lastIndex(%d)", lastIndex, r.RaftLog.LastIndex())
+		r.sendPb(rsp.To, rsp)
+		return
 	}
-	//
-	if rlog.committed <= md.Index {
-		rlog.committed = md.Index
+	//set pendingSnapshot
+	if r.RaftLog.pendingSnapshot == nil {
+		r.RaftLog.pendingSnapshot = m.GetSnapshot()
+		r.RaftLog.maybeCompact()
 	} else {
-		log.Warnf("logic error:committed(%d)> md.Index(%d)", rlog.committed, md.Index)
-	}
-	if rlog.applied <= md.Index {
-		rlog.applied = md.Index
-	} else {
-		log.Warnf("logic error:applied(%d)> md.Index(%d)", rlog.applied, md.Index)
-	}
-	//rlog.setMD(md)
-	//set nodes;
-	if r.State == StateLeader {
-		log.Warnf("node(%d) was leader!", r.id)
-	} else {
-		prs := map[uint64]*Progress{}
-		for _, nd := range md.GetConfState().GetNodes() {
-			prs[nd] = &Progress{}
+		//check old/new
+		old := r.RaftLog.pendingSnapshot.GetMetadata()
+		newmd := m.GetSnapshot().GetMetadata()
+		if old.GetIndex() < newmd.GetIndex() {
+			r.RaftLog.pendingSnapshot = m.GetSnapshot()
+			r.RaftLog.maybeCompact()
+		} else {
+			return
 		}
-		r.Prs = prs
 	}
-	//set term;
-	if r.Term < md.Term {
-		r.Term = md.Term
+	r.becomeFollower(term, leaderId)
+	nodes := m.GetSnapshot().GetMetadata().ConfState
+	r.Prs = map[uint64]*Progress{}
+	for _, nd := range nodes.GetNodes() {
+		r.Prs[nd] = &Progress{}
 	}
-	//change state;
-	r.becomeFollower(r.Term, m.GetFrom())
-	//
-	r.sendPb(m.GetFrom(), resp)
+
+	r.sendPb(rsp.To, rsp)
 }
 
 // addNode add a new node to raft group
@@ -418,12 +434,16 @@ func (r *Raft) send(to uint64, m message) {
 }
 
 func (r *Raft) sendSnapshot(to uint64) {
-	var sp pb.Snapshot
-	//sp.Metadata = &r.RaftLog.md
+	sp, err := r.RaftLog.storage.Snapshot()
+	if err != nil {
+		log.Error("send snapshot err:%s", err.Error())
+		return
+	}
 	msg := pb.Message{
 		MsgType:  pb.MessageType_MsgSnapshot,
 		From:     r.id,
 		To:       to,
+		Term:     r.Term,
 		Snapshot: &sp,
 	}
 	r.sendPb(to, msg)
@@ -468,7 +488,6 @@ func (r *Raft) handleRemote(m pb.Message) error {
 		r.onHeartbeat(m)
 	case pb.MessageType_MsgSnapshot:
 		r.handleSnapshot(m)
-
 	default:
 		log.Warnf("Step(%v) was not support", m.GetMsgType())
 	}

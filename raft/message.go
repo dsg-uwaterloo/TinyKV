@@ -130,3 +130,26 @@ func (ra *RspAppend) fromPbMsg(m pb.Message) {
 	ra.RspHeartbeat.fromPbMsg(m)
 	ra.LastLogIndex = m.GetIndex()
 }
+
+//term	领导人的任期号
+//leaderId	领导人的 Id，以便于跟随者重定向请求
+//lastIncludedIndex	快照中包含的最后日志条目的索引值
+//lastIncludedTerm	快照中包含的最后日志条目的任期号
+//offset	分块在快照中的字节偏移量
+//data[]	从偏移量开始的快照分块的原始字节
+//done	如果这是最后一个分块则为 true
+type ReqSnapshot struct {
+	Term     uint64
+	LeaderId uint64
+	//snapshot;
+	LastIndex uint64
+	LastTerm  uint64
+	//snapshot data split n blocks;do nothing  here
+	Offset uint64
+	Data   []byte
+	Done   bool
+}
+
+func (r *ReqSnapshot) fromPbMsg() {
+
+}

@@ -232,6 +232,10 @@ func (l *Logger) Infof(format string, v ...interface{}) {
 }
 
 func StringToLogLevel(level string) LogLevel {
+	//如果为空，那么就取环境变量(否则，系统变量设置没用).
+	if level == "" {
+		level = os.Getenv("LOG_LEVEL")
+	}
 	switch level {
 	case "fatal":
 		return LOG_LEVEL_FATAL
@@ -246,7 +250,8 @@ func StringToLogLevel(level string) LogLevel {
 	case "info":
 		return LOG_LEVEL_INFO
 	}
-	return LOG_LEVEL_ERROR
+	//如果系统变量也是空，那么默认值取info(类似于从环境变量读取日志级别).
+	return LOG_LEVEL_INFO
 }
 
 func LogTypeToString(t LogType) (string, string) {
@@ -335,7 +340,7 @@ func AddPkgType(pkg PkgType) {
 }
 
 func init() {
-	//AddPkgType(PT_raft)
+	AddPkgType(PT_raft)
 }
 
 //this dep = 5;

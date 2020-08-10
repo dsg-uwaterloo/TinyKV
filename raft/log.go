@@ -85,36 +85,12 @@ func newLog(storage Storage) *RaftLog {
 		rl.entries = make([]pb.Entry, len(ents))
 		copy(rl.entries, ents)
 		debugf("load from storage %d entries", len(ents))
-	} else {
-		if last > 0 {
-			rl.prevEntry.Index = last
-			rl.prevEntry.Term, _ = rl.storage.Term(last)
-		}
 	}
-	sp, err := storage.Snapshot()
-	if err != nil {
-		//
-	} else {
-		rl.prevEntry.Index = sp.GetMetadata().GetIndex()
-		rl.prevEntry.Term = sp.GetMetadata().GetTerm()
+	rl.prevEntry.Index = rl.applied
+	if rl.applied > 0 {
+		rl.prevEntry.Term, _ = rl.storage.Term(rl.applied)
 	}
 	return rl
-}
-
-func (l *RaftLog) pos(idx uint64) (uint64, error) {
-	elen := len(l.entries)
-	if elen == 0 {
-		return 0, ErrCompacted
-	}
-	e := l.entries[0]
-	if idx < e.Index {
-		return 0, ErrCompacted
-	}
-	off := idx - e.Index
-	if off >= uint64(elen) {
-		return 0, ErrUnavailable
-	}
-	return off, nil
 }
 
 // We need to compact the log entries in some point of time like
@@ -122,6 +98,41 @@ func (l *RaftLog) pos(idx uint64) (uint64, error) {
 // grow unlimitedly in memory
 func (l *RaftLog) maybeCompact() {
 	// Your Code Here (2C).
+	sp := l.pendingSnapshot
+	if sp == nil {
+		return
+	}
+	md := sp.GetMetadata()
+	if md == nil {
+		log.Fatalf("logic error:md is nil")
+		return
+	}
+	pos, err := l.pos(md.GetIndex())
+	if err != nil {
+		if err == ErrUnavailable ||
+			(err == ErrCompacted && len(l.entries) == 0) {
+			l.entries = l.entries[:0]
+		} else {
+			log.Warnf("")
+			return
+		}
+	} else {
+		if pos+1 == uint64(len(l.entries)) {
+			l.entries = l.entries[:0]
+		} else {
+			l.entries = l.entries[pos+1:]
+		}
+	}
+	//set idx;
+	l.applied = md.GetIndex()
+	if l.committed < l.applied {
+		l.committed = l.applied
+	}
+	if l.stabled < l.applied {
+		l.stabled = l.applied
+	}
+	l.prevEntry.Index = l.applied
+	l.prevEntry.Term = md.GetTerm()
 }
 
 // unstableEntries return all the unstable entries
@@ -169,8 +180,7 @@ func (l *RaftLog) LastIndex() uint64 {
 	if elen > 0 {
 		return l.entries[elen-1].Index
 	}
-	idx, _ := l.storage.LastIndex()
-	return idx
+	return l.prevEntry.Index
 }
 
 // Term return the term of the entry in the given index

@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"fmt"
 	"github.com/gogo/protobuf/sortkeys"
 	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
@@ -266,9 +267,9 @@ func (r *Raft) onAppendEntries(m pb.Message) {
 	}
 }
 
-func (r *Raft) makeHeartbeat(pr *Progress, hb *ReqHeartbeat) bool {
+func (r *Raft) makeHeartbeat(pr *Progress, hb *ReqHeartbeat) error {
 	if r.State != StateLeader {
-		return false
+		return fmt.Errorf("i(%d) was not leader", r.id)
 	}
 	hb.Term = r.Term
 	hb.LeaderId = r.id
@@ -277,13 +278,13 @@ func (r *Raft) makeHeartbeat(pr *Progress, hb *ReqHeartbeat) bool {
 		hb.PrevLogIndex = pr.Match
 		t, err := r.RaftLog.Term(pr.Match)
 		if err != nil {
-			log.Warnf("term(%d) error:%s", pr.Match, err.Error())
-			return false
+
+			return err
 		}
 		hb.PrevLogTerm = t
 	} else {
 		//如果没有日志，那么就默认值（1）.
 		hb.PrevLogTerm = 0
 	}
-	return true
+	return nil
 }

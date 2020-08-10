@@ -225,6 +225,7 @@ func (rn *RawNode) Advance(rd Ready) {
 		rn.prevReady.HardState = rd.HardState
 	}
 	//TODO (snapshot) : to do later;
+
 }
 
 // GetProgress return the the Progress of this node and its peers, if this
