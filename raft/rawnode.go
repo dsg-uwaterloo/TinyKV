@@ -187,6 +187,9 @@ func (rn *RawNode) Ready() (rd Ready) {
 // HasReady called when RawNode user need to check if any Ready pending.
 func (rn *RawNode) HasReady() bool {
 	// Your Code Here (2A).
+	if rn.Raft.RaftLog.pendingSnapshot != nil {
+		return true
+	}
 	newrd := makeReadyState(rn.Raft)
 	//debugf("hashReady:old=%s;new=%s;", state2str(&rn.prevReady), state2str(&newrd))
 	if false == sameSoftState(&newrd, &rn.prevReady) {
@@ -225,7 +228,7 @@ func (rn *RawNode) Advance(rd Ready) {
 		rn.prevReady.HardState = rd.HardState
 	}
 	//TODO (snapshot) : to do later;
-
+	rlog.pendingSnapshot = nil //reset;
 }
 
 // GetProgress return the the Progress of this node and its peers, if this
