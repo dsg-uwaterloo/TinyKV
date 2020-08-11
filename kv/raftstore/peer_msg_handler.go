@@ -435,7 +435,7 @@ func (d *peerMsgHandler) startTicker() {
 func (d *peerMsgHandler) onRaftBaseTick() {
 	d.RaftGroup.Tick()
 	d.ticker.schedule(PeerTickRaft)
-	d.HandleRaftReady()
+	//d.HandleRaftReady()
 }
 
 func (d *peerMsgHandler) ScheduleCompactLog(firstIndex uint64, truncatedIndex uint64) {

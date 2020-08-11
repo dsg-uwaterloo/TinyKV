@@ -340,7 +340,7 @@ func AddPkgType(pkg PkgType) {
 }
 
 func init() {
-	AddPkgType(PT_raft)
+	//AddPkgType(PT_raft)
 }
 
 //this dep = 5;

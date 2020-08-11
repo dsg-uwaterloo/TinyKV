@@ -164,7 +164,7 @@ func doSnapshot(engines *engine_util.Engines, mgr *snap.SnapManager, regionId ui
 	log.Debugf("begin to generate a snapshot. [regionId: %d]", regionId)
 
 	txn := engines.Kv.NewTransaction(false)
-
+	//get the apply info(index/term)--snapshot is start with apply index;
 	index, term, err := getAppliedIdxTermForSnapshot(engines.Raft, txn, regionId)
 	if err != nil {
 		return nil, err
@@ -203,6 +203,7 @@ func doSnapshot(engines *engine_util.Engines, mgr *snap.SnapManager, regionId ui
 	if err != nil {
 		return nil, err
 	}
+	// snapshotData 这里是数据仅仅是生成的snapshot的文件相关信息，具体的数据(snapshot.Data)是空的.
 	snapshot.Data, err = snapshotData.Marshal()
 	return snapshot, err
 }

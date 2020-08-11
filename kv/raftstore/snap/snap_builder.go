@@ -27,7 +27,6 @@ func newSnapBuilder(cfFiles []*CFFile, dbSnap *badger.Txn, region *metapb.Region
 func (b *snapBuilder) build() error {
 	defer b.txn.Discard()
 	startKey, endKey := b.region.StartKey, b.region.EndKey
-	//一个cf写一个文件；多给cf写到多个文件中。
 	for _, file := range b.cfFiles {
 		cf := file.CF
 		sstWriter := file.SstWriter

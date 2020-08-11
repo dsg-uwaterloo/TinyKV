@@ -253,6 +253,10 @@ func NewSnap(dir string, key SnapKey, sizeTrack *int64, isSending, toBuild bool,
 	prefix := fmt.Sprintf("%s_%s", snapPrefix, key)
 	displayPath := getDisplayPath(dir, prefix)
 	cfFiles := make([]*CFFile, 0, len(engine_util.CFs))
+	// key{regionId:1,term:2,index:3},cfs{default,write,lock}
+	// gen_1_2_3_default.sst.tmp  --->     gen_1_2_3_default.sst
+	// gen_1_2_3_write.sst.tmp    --->     gen_1_2_3_write.sst
+	// gen_1_2_3_lock.sst.tmp     --->     gen_1_2_3_lock.sst
 	for _, cf := range engine_util.CFs {
 		fileName := fmt.Sprintf("%s_%s%s", prefix, cf, sstFileSuffix)
 		path := filepath.Join(dir, fileName)
@@ -264,6 +268,7 @@ func NewSnap(dir string, key SnapKey, sizeTrack *int64, isSending, toBuild bool,
 		}
 		cfFiles = append(cfFiles, cfFile)
 	}
+	// gen_1_2_3.meta.tmp         --->     gen_1_2_3.meta
 	metaFileName := fmt.Sprintf("%s%s", prefix, metaFileSuffix)
 	metaFilePath := filepath.Join(dir, metaFileName)
 	metaTmpPath := metaFilePath + tmpFileSuffix

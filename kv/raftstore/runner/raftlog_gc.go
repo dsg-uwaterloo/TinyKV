@@ -18,6 +18,7 @@ type RaftLogGCTask struct {
 type raftLogGcTaskRes uint64
 
 type raftLogGCTaskHandler struct {
+	//默认是nil；所以，这里不会卡死.估计仅仅是为了测试，因为这里没法将chan传递进来
 	taskResCh chan<- raftLogGcTaskRes
 }
 

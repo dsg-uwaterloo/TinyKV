@@ -253,6 +253,7 @@ func (d *storeWorker) handleSnapMgrGC() error {
 	}
 	var lastRegionID uint64
 	var keys []snap.SnapKeyWithSending
+	//一个region为一组，scheduleGCSnap一次.
 	for _, pair := range snapKeys {
 		key := pair.SnapKey
 		if lastRegionID == key.RegionID {
