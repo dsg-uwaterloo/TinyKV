@@ -18,7 +18,7 @@ const InvalidID uint64 = 0
 
 func init() {
 	//log.AddPkgType(log.PT_raft)
-	//log.AddPkgType(log.PT_raftStore)
+	log.AddPkgType(log.PT_raftStore)
 }
 func RSDebugf(fmt string, v ...interface{}) {
 	log.PkgDebugf(log.PT_raftStore, 4, fmt, v...)

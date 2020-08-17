@@ -64,6 +64,7 @@ func (r *regionTaskHandler) Handle(t worker.Task) {
 		r.ctx.handleGen(task.RegionId, task.Notifier)
 	case *RegionTaskApply:
 		task := t.(*RegionTaskApply)
+		log.Infof(`RegionTaskApply(%d) ,snapshot(%+v)`, task.RegionId, task.SnapMeta)
 		r.ctx.handleApply(task.RegionId, task.Notifier, task.StartKey, task.EndKey, task.SnapMeta)
 	case *RegionTaskDestroy:
 		task := t.(*RegionTaskDestroy)

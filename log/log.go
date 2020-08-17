@@ -162,9 +162,9 @@ func (l *Logger) SetLevelByString(level string) {
 	l.level = StringToLogLevel(level)
 }
 
-func (l *Logger) log(t LogType, v ...interface{}) {
-	l.logf(t, "%v\n", v)
-}
+//func (l *Logger) log(t LogType, v ...interface{}) {
+//	l.logf(t, "%v\n", v)
+//}
 
 func (l *Logger) logf(t LogType, format string, v ...interface{}) {
 	if l.level|LogLevel(t) != l.level {
@@ -182,7 +182,7 @@ func (l *Logger) logf(t LogType, format string, v ...interface{}) {
 }
 
 func (l *Logger) Fatal(v ...interface{}) {
-	l.log(LOG_FATAL, v...)
+	l.logf(LOG_FATAL, "%v\n", v...)
 	os.Exit(-1)
 }
 
@@ -200,7 +200,7 @@ func (l *Logger) Panicf(format string, v ...interface{}) {
 }
 
 func (l *Logger) Error(v ...interface{}) {
-	l.log(LOG_ERROR, v...)
+	l.logf(LOG_ERROR, "%v\n", v...)
 }
 
 func (l *Logger) Errorf(format string, v ...interface{}) {
@@ -208,7 +208,7 @@ func (l *Logger) Errorf(format string, v ...interface{}) {
 }
 
 func (l *Logger) Warning(v ...interface{}) {
-	l.log(LOG_WARNING, v...)
+	l.logf(LOG_WARNING, "%v\n", v...)
 }
 
 func (l *Logger) Warningf(format string, v ...interface{}) {
@@ -216,7 +216,7 @@ func (l *Logger) Warningf(format string, v ...interface{}) {
 }
 
 func (l *Logger) Debug(v ...interface{}) {
-	l.log(LOG_DEBUG, v...)
+	l.logf(LOG_DEBUG, "%v\n", v...)
 }
 
 func (l *Logger) Debugf(format string, v ...interface{}) {
@@ -224,7 +224,7 @@ func (l *Logger) Debugf(format string, v ...interface{}) {
 }
 
 func (l *Logger) Info(v ...interface{}) {
-	l.log(LOG_INFO, v...)
+	l.logf(LOG_INFO, "%v\n", v...)
 }
 
 func (l *Logger) Infof(format string, v ...interface{}) {
@@ -312,7 +312,8 @@ const (
 	PT_raft        = 0x1
 	PT_raftStore   = 0x2
 	PT_raftStorage = 0x4
-
+	//
+	PT_testlog = 0x5
 	//
 	PT_test_raftStore = 0x100
 )
@@ -327,6 +328,8 @@ func (pt PkgType) String() string {
 		return "<raft storage>"
 	case PT_test_raftStore:
 		return "<test raft-store>"
+	case PT_testlog:
+		return "<test>"
 	case PT_none:
 		return "<none>"
 	}
@@ -348,4 +351,8 @@ func PkgDebugf(pkg PkgType, dep int, format string, v ...interface{}) {
 	if g_pt&pkg != 0 {
 		LogOutputDepth(dep, pkg, LOG_DEBUG, format, v...)
 	}
+}
+
+func TestLog(format string, v ...interface{}) {
+	LogOutputDepth(3, PT_testlog, LOG_ERROR, format, v...)
 }

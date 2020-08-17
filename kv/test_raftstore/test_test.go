@@ -116,7 +116,7 @@ func partitioner(t *testing.T, cluster *Cluster, ch chan bool, done *int32, unre
 			}
 		}
 		cluster.ClearFilters()
-		log.Debugf("partition: %v, %v", pa[0], pa[1])
+		log.Warnf("partition: %v, %v", pa[0], pa[1])
 		cluster.AddFilter(&PartitionFilter{
 			s1: pa[0],
 			s2: pa[1],
@@ -311,7 +311,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 				if region == nil {
 					panic("region is not found")
 				}
-				for _, engine := range cluster.engines {
+				for idx, engine := range cluster.engines {
 					state, err := meta.GetApplyState(engine.Kv, region.GetId())
 					if err == badger.ErrKeyNotFound {
 						continue
@@ -322,7 +322,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 					truncatedIdx := state.TruncatedState.Index
 					appliedIdx := state.AppliedIndex
 					if appliedIdx-truncatedIdx > 2*uint64(maxraftlog) {
-						t.Fatalf("logs were not trimmed (%v - %v > 2*%v)", appliedIdx, truncatedIdx, maxraftlog)
+						t.Fatalf("#%d logs were not trimmed (%v - %v > 2*%v)", idx, appliedIdx, truncatedIdx, maxraftlog)
 					}
 				}
 
@@ -448,6 +448,7 @@ func TestPersistPartitionUnreliable2B(t *testing.T) {
 
 func TestOneSnapshot2C(t *testing.T) {
 	cfg := config.NewTestConfig()
+	//cfg.LogLevel = "debug"
 	cfg.RaftLogGcCountLimit = 10
 	cluster := NewTestCluster(3, cfg)
 	cluster.Start()

@@ -1,6 +1,7 @@
 package raftstore
 
 import (
+	"github.com/pingcap-incubator/tinykv/log"
 	"sync"
 
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/message"
@@ -33,10 +34,13 @@ func newRaftWorker(ctx *GlobalContext, pm *router) *raftWorker {
 func (rw *raftWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 	defer wg.Done()
 	var msgs []message.Msg
+	reginId := uint64(1)
 	for {
 		msgs = msgs[:0]
 		select {
 		case <-closeCh:
+			peer := rw.pr.get(reginId)
+			log.Warnf(`%s stop-here:%s`, peer.peer.Tag, peer.peer.RaftGroup.Raft.String())
 			return
 		case msg := <-rw.raftCh:
 			msgs = append(msgs, msg)
@@ -52,6 +56,8 @@ func (rw *raftWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 				continue
 			}
 			newPeerMsgHandler(peerState.peer, rw.ctx).HandleMsg(msg)
+			//
+			reginId = msg.RegionID
 		}
 		for _, peerState := range peerStateMap {
 			newPeerMsgHandler(peerState.peer, rw.ctx).HandleRaftReady()

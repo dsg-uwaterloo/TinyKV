@@ -159,6 +159,8 @@ type Raft struct {
 	// value.
 	// (Used in 3A conf change)
 	PendingConfIndex uint64
+	//
+	tag string
 }
 
 func (r *Raft) String() string {
@@ -207,7 +209,9 @@ func newRaft(c *Config) *Raft {
 	for _, peer := range c.peers {
 		r.Prs[peer] = &Progress{}
 	}
-	debugf("%s", r.String())
+	//
+	r.tag = fmt.Sprintf("raft-%d", r.id)
+	log.Infof("%s", r.String())
 	return r
 }
 
@@ -220,9 +224,11 @@ func (r *Raft) sendAppend(to uint64) bool {
 	err := r.makeHeartbeat(pr, &req.ReqHeartbeat)
 	if err != nil {
 		if err == ErrCompacted {
+			log.Warnf("%s sendAppend(%d,%v) error:%s.do sendSnapshot.", r.tag, to, pr, err.Error())
 			r.sendSnapshot(to)
+			return true
 		}
-		log.Warnf("makeHeartbeat(%d) error:%s", pr.Match, err.Error())
+		log.Warnf("%s makeHeartbeat(%d) error:%s", r.tag, pr.Match, err.Error())
 		return false
 	}
 	//get entries;
@@ -246,7 +252,8 @@ func (r *Raft) sendHeartbeat(to uint64) {
 	if err == nil {
 		r.send(to, &req)
 	} else {
-		log.Warnf("makeHeartbeat(%d,%v) error:%s", to, pr, err.Error())
+		log.Warnf("%s sendHeartbeat(%d,%v) error:%s. do sendSnapshot", r.tag, to, pr, err.Error())
+		r.sendSnapshot(to)
 	}
 }
 
@@ -278,7 +285,7 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	//election reset;
 	r.electionElapsed = 0
 	r.randomElection()
-	log.Infof("%d become to follower(%d) vote(%d) lastIndex(%d)", r.id, r.Term, lead, r.RaftLog.LastIndex())
+	log.Infof("%s become to follower(%d) vote(%d) lastIndex(%d)", r.tag, r.Term, lead, r.RaftLog.LastIndex())
 }
 
 // becomeCandidate transform this peer's state to candidate
@@ -295,7 +302,7 @@ func (r *Raft) becomeCandidate() { //可能是再次选举。
 	//(5.2)重置选举超时计时器
 	r.electionElapsed = 0
 	r.randomElection()
-	log.Infof("%d goto election(%d)", r.id, r.Term)
+	log.Infof("%s goto election(%d)", r.tag, r.Term)
 }
 
 // becomeLeader transform this peer's state to leader
@@ -311,8 +318,8 @@ func (r *Raft) becomeLeader() {
 		pr.Match = r.RaftLog.LastIndex()
 		pr.Next = r.RaftLog.LastIndex() + 1 //初始化为领导人最后索引值加一
 	}
-	log.Infof("%d become to leader: term(%d)index(%d)", r.id, r.Term, r.RaftLog.LastIndex())
-	//log.Warnf("%d become to leader(%d)last(%d)raftLog%s", r.id, r.Term, r.RaftLog.LastIndex(), r.RaftLog.String())
+	log.Infof("%s become to leader: term(%d)index(%d)", r.tag, r.Term, r.RaftLog.LastIndex())
+	log.TestLog("%s become to leader(%d)last(%d)raftLog%s", r.tag, r.Term, r.RaftLog.LastIndex(), r.RaftLog.String())
 	//TODO : check - 论文说，每次选举为leader，都会立马发送一条空消息（心跳消息）；但是，这里实现，似乎说data为空都append消息。
 	r.Step(pb.Message{From: 0, To: 0, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{}}})
 	//r.Step(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgBeat})
@@ -350,7 +357,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	if m.GetSnapshot().GetMetadata() == nil {
 		log.Warnf("handleSnapshot %s", snap2str(&m))
 	}
-	debugf("handleSnapshot %s", snap2str(&m))
+	log.Infof("handleSnapshot %s", snap2str(&m))
 	//term	领导人的任期号
 	//leaderId	领导人的 Id，以便于跟随者重定向请求
 	//lastIncludedIndex	快照中包含的最后日志条目的索引值
@@ -360,7 +367,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	//done	如果这是最后一个分块则为 true
 	term := m.GetTerm()
 	leaderId := m.GetFrom()
-	md := m.GetSnapshot().Metadata
+	md := m.GetSnapshot().GetMetadata()
 	lastIndex := md.GetIndex()
 	//lastTerm := md.GetTerm()
 	//data := m.GetSnapshot().GetData()
@@ -368,38 +375,49 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	var rsp pb.Message
 	rsp.To = m.GetFrom()
 	rsp.Term = r.Term
+	rsp.Reject = true
 	if term < r.Term {
-		r.sendPb(rsp.To, rsp)
+		//r.sendPb(rsp.To, rsp)
 		return
 	}
 	if lastIndex < r.RaftLog.LastIndex() {
-		log.Error("logic error:snap.lastIndex(%d)<local.lastIndex(%d)", lastIndex, r.RaftLog.LastIndex())
-		r.sendPb(rsp.To, rsp)
+		log.Errorf("logic error:snap.lastIndex(%d)<local.lastIndex(%d)", lastIndex, r.RaftLog.LastIndex())
+		//r.sendPb(rsp.To, rsp)
 		return
 	}
 	//set pendingSnapshot
+	sp := m.GetSnapshot()
 	if r.RaftLog.pendingSnapshot == nil {
-		r.RaftLog.pendingSnapshot = m.GetSnapshot()
-		r.RaftLog.maybeCompact()
+		r.RaftLog.pendingSnapshot = sp
 	} else {
 		//check old/new
 		old := r.RaftLog.pendingSnapshot.GetMetadata()
-		newmd := m.GetSnapshot().GetMetadata()
-		if old.GetIndex() < newmd.GetIndex() {
-			r.RaftLog.pendingSnapshot = m.GetSnapshot()
-			r.RaftLog.maybeCompact()
+		if old.GetIndex() < md.GetIndex() {
+			r.RaftLog.pendingSnapshot = sp
 		} else {
+			// snapshot was installing.
+			log.Warnf(`%s was installing snapshot(%d,%d)`, r.tag, old.GetIndex(), old.GetTerm())
 			return
 		}
 	}
+	//clear raftLog entries;
+	rlog := r.RaftLog
+	rlog.entries = rlog.entries[:0]
+	rlog.applied = md.GetIndex()
+	rlog.committed = rlog.applied
+	rlog.stabled = rlog.applied
+	rlog.prevEntry.Index = md.GetIndex()
+	rlog.prevEntry.Term = md.GetTerm()
+	//set nodes;
 	r.becomeFollower(term, leaderId)
-	nodes := m.GetSnapshot().GetMetadata().ConfState
+	nodes := m.GetSnapshot().GetMetadata().GetConfState()
 	r.Prs = map[uint64]*Progress{}
 	for _, nd := range nodes.GetNodes() {
 		r.Prs[nd] = &Progress{}
 	}
-
-	r.sendPb(rsp.To, rsp)
+	//rsp.Reject = false
+	//r.sendPb(rsp.To, rsp)
+	debugf("%s install snapshot ok.raftLog{%s}", r.tag, rlog.String())
 }
 
 // addNode add a new node to raft group
@@ -436,17 +454,25 @@ func (r *Raft) send(to uint64, m message) {
 func (r *Raft) sendSnapshot(to uint64) {
 	sp, err := r.RaftLog.storage.Snapshot()
 	if err != nil {
-		log.Error("send snapshot err:%s", err.Error())
+		log.Warnf("%s send snapshot err:%s", r.tag, err.Error())
 		return
 	}
+	debugf("%s sendSnapshot to(%d)", r.tag, to)
 	msg := pb.Message{
 		MsgType:  pb.MessageType_MsgSnapshot,
-		From:     r.id,
-		To:       to,
 		Term:     r.Term,
 		Snapshot: &sp,
 	}
 	r.sendPb(to, msg)
+	//update pr;
+	pr := r.Prs[to]
+	pr.Match = sp.GetMetadata().GetIndex()
+	pr.Next = pr.Match + 1
+	//
+	lastIndex := r.RaftLog.LastIndex()
+	if pr.Match > lastIndex {
+		log.Errorf("%s sendSnapshot pr.March(%d) > lastIndex(%d)", r.tag, pr.Match, lastIndex)
+	}
 }
 
 func (r *Raft) broadcast(m message) {

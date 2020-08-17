@@ -3,6 +3,7 @@ package raftstore
 import (
 	"encoding/binary"
 	"fmt"
+	"github.com/pingcap-incubator/tinykv/kv/raftstore/meta"
 	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"github.com/pingcap-incubator/tinykv/raft"
@@ -128,7 +129,7 @@ func (d *peerMsgHandler) sendRaftMsg(rd *raft.Ready) {
 		err := d.ctx.trans.Send(rmsg)
 		if !util.IsHeartbeatMsg(msg.GetMsgType()) {
 			if err != nil {
-				//log.Errorf(" %d send %d msg(%v)error:%v", msg.GetFrom(), msg.GetTo(), msg.GetMsgType(), err)
+				log.Warnf(" %d send %d msg(%v)error:%v", msg.GetFrom(), msg.GetTo(), msg.GetMsgType(), err)
 			} else {
 				util.RSDebugf(" %d send %d msg(%v)", msg.GetFrom(), msg.GetTo(), msg.GetMsgType())
 			}
@@ -221,11 +222,11 @@ func (d *peerMsgHandler) processEntry(ent *eraftpb.Entry) {
 	}
 	cb := d.peer.popCallback(&rmw)
 	util.RSDebugf("%s processEntry:%s.", d.peer.Tag, rmw.String())
+	if rmw.raftmsg.GetAdminRequest() != nil {
+		d.onAdminRequest(rmw.raftmsg.GetAdminRequest())
+	}
 	//apply;
 	if len(rmw.raftmsg.GetRequests()) == 0 {
-		err := fmt.Errorf("GetRequests isEmtpy(%d:%d)", rmw.MsgIdx, rmw.raftmsg.GetHeader().GetTerm())
-		cb.Done(ErrResp(err))
-		log.Warnf("process entry :%s", err.Error())
 		return
 	}
 	var resps = make([]raft_cmdpb.Response, len(rmw.raftmsg.GetRequests()))
@@ -295,7 +296,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	}
 	//1.stabled;
 	//d.saveRaftLog(&rd)
-	util.RSDebugf("HandleRaftReady(%s)", d.peer.Tag)
+	util.RSDebugf("%s HandleRaftReady", d.peer.Tag)
 	rd := raftGroup.Ready()
 	_, err := d.peerStorage.SaveReadyState(&rd)
 	if err != nil {
@@ -382,6 +383,59 @@ func (d *peerMsgHandler) preProposeRaftCommand(req *raft_cmdpb.RaftCmdRequest) e
 	return err
 }
 
+func (d *peerMsgHandler) onCompactLog(msg *raft_cmdpb.CompactLogRequest) {
+	compactIdx := msg.GetCompactIndex()
+	compactTerm := msg.GetCompactTerm()
+	//可能是落后的node，需要进行install snapshot，所以直接返回.
+	psLast, err := d.peerStorage.LastIndex()
+	if err != nil {
+		log.Errorf("%s peerStorage.LastIndex() err:%s", d.Tag, err.Error())
+		return
+	}
+	if compactIdx > psLast {
+		log.Errorf(`%s onCompactLog(%d) is lost node(%d)`, d.Tag, compactIdx, psLast)
+		return
+	}
+	//check;
+	term, err := d.RaftGroup.Raft.RaftLog.Term(compactIdx)
+	if err != nil {
+		log.Errorf("%s term(%d) err:%s", d.Tag, compactIdx, err.Error())
+		return
+	}
+	if term != compactTerm {
+		log.Errorf("term(%d->%d) != compactTerm(%d) err:%s", d.Tag, compactIdx, term, compactTerm)
+		return
+	}
+	psTerm, err := d.peerStorage.Term(compactIdx)
+	if err != nil {
+		log.Errorf("%s psTerm(%d) err:%s", d.Tag, compactIdx, err.Error())
+		return
+	}
+	if psTerm != compactTerm {
+		log.Errorf("%s psTerm(%d->%d) != compactTerm(%d)", d.Tag, compactIdx, psTerm, compactTerm)
+		return
+	}
+	//reset truncate index;(这个是放这删除之前还是删除之后？)
+	var kvwb engine_util.WriteBatch
+	stor := d.peerStorage
+	stor.applyState.TruncatedState.Index = compactIdx
+	stor.applyState.TruncatedState.Term = compactTerm
+	kvwb.SetMeta(meta.ApplyStateKey(d.regionId), stor.applyState)
+	kvwb.WriteToDB(d.ctx.engine.Kv)
+	//compact;
+	d.ScheduleCompactLog(0, compactIdx)
+
+}
+
+func (d *peerMsgHandler) onAdminRequest(msg *raft_cmdpb.AdminRequest) {
+	switch msg.GetCmdType() {
+	case raft_cmdpb.AdminCmdType_CompactLog:
+		d.onCompactLog(msg.GetCompactLog())
+	default:
+		log.Warnf("'%v' was not support.", msg.GetCmdType())
+	}
+}
+
 func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
 	err := d.preProposeRaftCommand(msg)
 	if err != nil {
@@ -389,13 +443,10 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		return
 	}
 	// Your Code Here (2B).
-	//TODO ；check is need read process?如果这样处理，那么可能follower节点的数据，是没有同步的，导致不是最新的.
-	//if isReadRequest(msg) {
-	//	d.processReadRequest(msg, cb)
-	//} else {
-	//	d.raftPropose(msg, cb)
+	//if msg.GetAdminRequest() != nil {
+	//	d.onAdminRequest(msg.GetAdminRequest())
+	//	return
 	//}
-	//本来想read不需要走raft共识，但是有问题：leader更新
 	d.raftPropose(msg, cb)
 }
 
@@ -714,7 +765,7 @@ func (d *peerMsgHandler) onRaftGCLogTick() {
 	} else {
 		return
 	}
-
+	//log.TestLog("%s now going to RaftGCLog compactIdx=%d", d.Tag, compactIdx)
 	y.Assert(compactIdx > 0)
 	compactIdx -= 1
 	if compactIdx < firstIdx {

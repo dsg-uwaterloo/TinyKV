@@ -96,43 +96,68 @@ func newLog(storage Storage) *RaftLog {
 // We need to compact the log entries in some point of time like
 // storage compact stabled log entries prevent the log entries
 // grow unlimitedly in memory
-func (l *RaftLog) maybeCompact() {
+func (l *RaftLog) maybeCompact(id uint64) {
 	// Your Code Here (2C).
-	sp := l.pendingSnapshot
-	if sp == nil {
+	//no entries;do not to compact;
+	if len(l.entries) == 0 {
 		return
 	}
-	md := sp.GetMetadata()
-	if md == nil {
-		log.Fatalf("logic error:md is nil")
-		return
-	}
-	pos, err := l.pos(md.GetIndex())
+	firstEntry := l.entries[0]
+	sFirst, err := l.storage.FirstIndex()
 	if err != nil {
-		if err == ErrUnavailable ||
-			(err == ErrCompacted && len(l.entries) == 0) {
-			l.entries = l.entries[:0]
-		} else {
-			log.Warnf("")
-			return
-		}
+		log.Warnf("%d maybeCompact FirstIndex err:%s", id, err.Error())
+		return
+	}
+	if sFirst == firstEntry.Index {
+		return
+	}
+	//no way;
+	if sFirst < firstEntry.Index {
+		log.Fatalf("%d maybeCompact logic error: raftLog first(%d) and storage first(%d)", id, firstEntry.Index, sFirst)
+		return
+	}
+	//sFirst > firstEntry.Index
+	_, err = l.storage.Term(sFirst)
+	if err != nil {
+		log.Warnf("%d maybeCompact storage.Term(%d) err:%s", id, sFirst, err.Error())
+		return
+	}
+	if l.applied < sFirst {
+		//一般情况下，storage中，compact是小于apply的；那么在这里，应该跟storage中的apply是一致的.
+		log.Warnf("%d apply(%d) < storage.FirstIndex(%d)", id, l.applied, sFirst)
+	}
+	//compact position;
+	//sLast, _ := l.storage.LastIndex()
+	//pos, err := l.pos(sFirst)
+	//if err != nil {
+	//	if err == ErrUnavailable {
+	//		//这说明storage中的日志比raftLog中的日志多，这不可能!!!
+	//		log.Fatalf("%d maybeCompact logic error: storage.first(%d) was not exist at raftLog", id, sFirst)
+	//		return
+	//	}
+	//	if err == ErrCompacted {
+	//		//这表示已经compact了，这不可能.
+	//		log.Fatalf("maybeCompact logic error: storage first(%d) was not compacted at raftLog", sFirst)
+	//		return
+	//	}
+	//	log.Fatalf("maybeCompact logic error(%d) err:%s", sFirst, err.Error())
+	//	return
+	//}
+	prev, err := l.pos(sFirst - 1)
+	if err != nil {
+		log.Fatalf("%d maybeCompact logic error(prev:%d) err:%s", id, sFirst, err.Error())
+		return
+	}
+	prevNode := l.entries[prev]
+	l.prevEntry.Index = prevNode.GetIndex()
+	l.prevEntry.Term = prevNode.GetTerm()
+	//compact entries;
+	if uint64(len(l.entries)) > prev+1 {
+		l.entries = l.entries[prev+1:]
 	} else {
-		if pos+1 == uint64(len(l.entries)) {
-			l.entries = l.entries[:0]
-		} else {
-			l.entries = l.entries[pos+1:]
-		}
+		l.entries = l.entries[:0]
 	}
-	//set idx;
-	l.applied = md.GetIndex()
-	if l.committed < l.applied {
-		l.committed = l.applied
-	}
-	if l.stabled < l.applied {
-		l.stabled = l.applied
-	}
-	l.prevEntry.Index = l.applied
-	l.prevEntry.Term = md.GetTerm()
+	log.Infof("%d compact [%d,%d)", id, firstEntry.Index, sFirst)
 }
 
 // unstableEntries return all the unstable entries
@@ -163,7 +188,9 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	}
 	cpos, err := l.pos(l.committed)
 	if err != nil {
-		panic(fmt.Sprintf("nextEnts,commit=%d;applied=%d,len=%d;err:%s", l.committed, l.applied, len(l.entries), err.Error()))
+		slast, _ := l.storage.LastIndex()
+		panic(fmt.Sprintf("nextEnts,commit=%d;applied=%d,stabled=%d,len=%d,storage.last=%d;err:%s",
+			l.committed, l.applied, l.stabled, len(l.entries), slast, err.Error()))
 	}
 	start, err := l.pos(l.applied + 1)
 	if err != nil { //如果报错，说明这个位置没有数据，那么直接返回空。

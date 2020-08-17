@@ -77,7 +77,7 @@ func (r *Raft) processHeartBeatRequest(req *ReqHeartbeat, resp *RspHeartbeat) {
 		return //false
 	}
 	if localTerm != req.PrevLogTerm {
-		log.Warnf("localTerm(%d) != req.PrevLogTerm(%d)", localTerm, req.PrevLogTerm)
+		log.Warnf("%s index(%d)localTerm(%d) != req.PrevLogTerm(%d)", r.tag, req.PrevLogIndex, localTerm, req.PrevLogTerm)
 		return
 	}
 	resp.Success = true
@@ -111,9 +111,15 @@ func (r *Raft) processEntries(entries []*pb.Entry) bool {
 		if rlog.entries[start].Term != entries[inpos].Term {
 			//delete the conflict position logs;
 			rlog.entries = rlog.entries[:start]
-			if rlog.stabled > start {
+			if len(rlog.entries) > 0 {
 				//日志有冲突，那么就需要重新saveLog
-				rlog.stabled = start
+				last := len(rlog.entries) - 1
+				ent := &rlog.entries[last]
+				if rlog.stabled > ent.Index {
+					rlog.stabled = ent.Index
+				}
+			} else {
+				rlog.stabled = entries[inpos].Index - 1
 			}
 			break //(start,inpos) is conflict position;
 		} else {
@@ -138,6 +144,7 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 	//
 	r.processHeartBeatRequest(&req, &resp)
 	if false == resp.Success {
+		r.send(m.GetFrom(), &resp)
 		return
 	}
 	//3.如果已经存在的日志条目和新的产生冲突（索引值相同但是任期号不同），删除这一条和之后所有的 （5.3 节）
@@ -147,7 +154,7 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 	if cidx > r.RaftLog.committed {
 		r.RaftLog.committed = cidx
 	}
-
+	r.send(m.GetFrom(), &resp)
 }
 
 // handleHeartbeat handle Heartbeat RPC request
