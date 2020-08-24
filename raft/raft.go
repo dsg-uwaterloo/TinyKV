@@ -159,6 +159,7 @@ type Raft struct {
 	// value.
 	// (Used in 3A conf change)
 	PendingConfIndex uint64
+	pendingConf      *pb.ConfChange
 	//
 	tag string
 }
@@ -328,6 +329,10 @@ func (r *Raft) becomeLeader() {
 // Step the entrance of handle message, see `MessageType`
 // on `eraftpb.proto` for what msgs should be handled
 func (r *Raft) Step(m pb.Message) error {
+	if false == r.isInRaft() {
+		log.Warnf(`%s was not in raft.drop msg(%v)`, r.tag, m.GetMsgType())
+		return fmt.Errorf(`not in raft`)
+	}
 	// Your Code Here (2A).
 	if IsLocalMsg(m.MsgType) {
 		return r.handleLocal(m)
@@ -381,7 +386,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 		return
 	}
 	if lastIndex < r.RaftLog.LastIndex() {
-		log.Errorf("logic error:snap.lastIndex(%d)<local.lastIndex(%d)", lastIndex, r.RaftLog.LastIndex())
+		log.Errorf("logic error:snap.lastIndex(%d)<local.lastIndex(%d);raftLog%s", lastIndex, r.RaftLog.LastIndex(), r.RaftLog.String())
 		//r.sendPb(rsp.To, rsp)
 		return
 	}
@@ -423,11 +428,36 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
+	_, ok := r.Prs[id]
+	if ok {
+		log.Warnf(`%s : node-%d has added`, r.tag, id)
+		return
+	}
+	pr := Progress{
+		Match: r.RaftLog.LastIndex(),
+		Next:  r.RaftLog.LastIndex() + 1, //初始化为领导人最后索引值加一
+	}
+	r.Prs[id] = &pr
+	r.sendAppend(id)
+	log.Infof(`%s : node-%d add ok.`, r.tag, id)
+	r.PendingConfIndex = 0
+	r.pendingConf = nil
 }
 
 // removeNode remove a node from raft group
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
+	_, ok := r.Prs[id]
+	if !ok {
+		log.Warnf(`%s : node-%d has deleted`, r.tag, id)
+		return
+	}
+	delete(r.Prs, id)
+	log.Infof(`%s : node-%d delete ok.`, r.tag, id)
+	//删除节点之后，在该log往后都日志，可能已经够multi了，所以需要更新下commit.
+	r.updatePrCommits()
+	r.PendingConfIndex = 0
+	r.pendingConf = nil
 }
 
 //other help functions;
@@ -514,13 +544,15 @@ func (r *Raft) handleRemote(m pb.Message) error {
 		r.onHeartbeat(m)
 	case pb.MessageType_MsgSnapshot:
 		r.handleSnapshot(m)
+	case pb.MessageType_MsgTimeoutNow:
+		r.handleTimeoutNow(m)
 	default:
 		log.Warnf("Step(%v) was not support", m.GetMsgType())
 	}
 	return nil
 }
 
-func (r *Raft) handleLocal(m pb.Message) error {
+func (r *Raft) handleLocal(m pb.Message) (err error) {
 
 	switch m.GetMsgType() {
 	case pb.MessageType_MsgHup:
@@ -529,13 +561,17 @@ func (r *Raft) handleLocal(m pb.Message) error {
 		r.handleBeat(m)
 	case pb.MessageType_MsgPropose:
 		r.handlePropose(m)
+	case pb.MessageType_MsgTransferLeader:
+		r.handleTransferLeader(m)
+	default:
+		err = fmt.Errorf(`msg(%v) was not support`, m.GetMsgType())
 	}
-	return nil
+	return err
 }
 
 func (r *Raft) handlePropose(m pb.Message) {
 	if r.State != StateLeader {
-		log.Warnf("state(%v) was not leader!can not Propose('%d->%d'(ents=%d))", r.State, r.id, m.GetTo(), len(m.GetEntries()))
+		log.Warnf("%s state(%v) was not leader!can not Propose('%d->%d'(ents=%d))", r.tag, r.State, r.id, m.GetTo(), len(m.GetEntries()))
 		return
 	}
 	debugf("'%d->%d'%v(ents=%d)", r.id, m.GetTo(), m.GetMsgType(), len(m.GetEntries()))
@@ -590,3 +626,64 @@ func (r *Raft) handleHup(m pb.Message) {
 	debugf("%d %v", r.id, m.GetMsgType())
 	r.elect()
 }
+
+func (r *Raft) handleTransferLeader(m pb.Message) {
+	log.Infof("%s handleTransferLeader('%d->%d')lead(%d)", r.tag, m.GetFrom(), m.GetTo(), r.Lead)
+	//如果不是leader，那么就转发到leader去.
+	if r.State != StateLeader {
+		//was not leader;
+		r.sendPb(r.Lead, m)
+		return
+	}
+	//如果是leader，那么就向transfer 发送 timeout 消息.
+	transfee := m.GetFrom()
+	if r.leadTransferee != None {
+		if transfee == r.leadTransferee {
+			//已经中同步日志了，将要传递给这个transferee，所以没有必要继续了.
+			return
+		} else {
+			//两次transferee不一致，reset first.
+			r.leadTransferee = 0
+		}
+	}
+	pr, ok := r.Prs[transfee]
+	if !ok {
+		log.Errorf(`%s : node-%d was not exist.do nothing.`, r.tag, transfee)
+		return
+	}
+	//如果日志不同步，先同步日志；
+	if pr.Match < r.RaftLog.LastIndex() {
+		r.sendAppend(transfee)
+		r.leadTransferee = transfee
+		return
+	}
+	//日志已经是最新的了，可以timeout，触发选举.
+	r.sendTimeoutNow(transfee)
+}
+
+func (r *Raft) handleTimeoutNow(m pb.Message) {
+	log.Warnf(`%s handleTimeoutNow(%d) `, r.tag, m.GetFrom())
+	var hb ReqHeartbeat
+	hb.fromPbMsg(m)
+	var resp RspAppend
+	r.processHeartBeatRequest(&hb, &resp.RspHeartbeat)
+	//如果失败，就需要触发追日志，所以需要会append都响应消息。
+	if resp.Success == false {
+		r.send(m.GetFrom(), &resp)
+		return
+	}
+	//校验成功,处理timeout now.
+	r.elect()
+}
+
+//func (r *Raft) onTimeoutNow(m pb.Message) {
+//	log.Warnf(`%s onTimeoutNow(%d) %v`, r.tag, m.GetFrom(), !m.GetReject())
+//	var resp RspHeartbeat
+//	resp.fromPbMsg(m)
+//	//失败，那么需要同步数据.
+//	if false == resp.Success {
+//		r.onHeartbeatsFailed(m.GetFrom(), &resp, func(to uint64) { r.sendAppend(to) })
+//		return
+//	}
+//	//成功，啥都不用做.
+//}

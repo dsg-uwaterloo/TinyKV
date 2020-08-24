@@ -1,6 +1,8 @@
 package raft
 
-import "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+import (
+	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+)
 
 func (l *RaftLog) pos(idx uint64) (uint64, error) {
 	elen := len(l.entries)
@@ -18,6 +20,6 @@ func (l *RaftLog) pos(idx uint64) (uint64, error) {
 	return off, nil
 }
 
-func snapshotEqual(a, b *eraftpb.Snapshot) bool {
+func snapshotEqual(a, b *pb.Snapshot) bool {
 	return false
 }

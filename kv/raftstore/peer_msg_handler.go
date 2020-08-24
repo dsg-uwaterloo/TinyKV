@@ -146,7 +146,7 @@ func (d *peerMsgHandler) saveRaftLog(rd *raft.Ready) {
 	var raftwb engine_util.WriteBatch
 	err := d.peer.peerStorage.Append(rd.Entries, &raftwb)
 	if err != nil {
-		log.Fatalf("HandleRaftReady store.Append err:%s", err.Error())
+		log.Fatalf("saveRaftLog store.Append err:%s", err.Error())
 		return
 	}
 	raftwb.WriteToDB(d.ctx.engine.Raft)
@@ -389,7 +389,7 @@ func (d *peerMsgHandler) onCompactLog(msg *raft_cmdpb.CompactLogRequest) {
 	//可能是落后的node，需要进行install snapshot，所以直接返回.
 	psLast, err := d.peerStorage.LastIndex()
 	if err != nil {
-		log.Errorf("%s peerStorage.LastIndex() err:%s", d.Tag, err.Error())
+		log.Errorf("%s onCompactLog peerStorage.LastIndex() err:%s", d.Tag, err.Error())
 		return
 	}
 	if compactIdx > psLast {
@@ -399,20 +399,20 @@ func (d *peerMsgHandler) onCompactLog(msg *raft_cmdpb.CompactLogRequest) {
 	//check;
 	term, err := d.RaftGroup.Raft.RaftLog.Term(compactIdx)
 	if err != nil {
-		log.Errorf("%s term(%d) err:%s", d.Tag, compactIdx, err.Error())
+		log.Errorf("%s onCompactLog term(%d) err:%s", d.Tag, compactIdx, err.Error())
 		return
 	}
 	if term != compactTerm {
-		log.Errorf("term(%d->%d) != compactTerm(%d) err:%s", d.Tag, compactIdx, term, compactTerm)
+		log.Errorf("%s onCompactLog term(%d->%d) != compactTerm(%d) err:%s", d.Tag, compactIdx, term, compactTerm)
 		return
 	}
 	psTerm, err := d.peerStorage.Term(compactIdx)
 	if err != nil {
-		log.Errorf("%s psTerm(%d) err:%s", d.Tag, compactIdx, err.Error())
+		log.Errorf("%s onCompactLog psTerm(%d) err:%s", d.Tag, compactIdx, err.Error())
 		return
 	}
 	if psTerm != compactTerm {
-		log.Errorf("%s psTerm(%d->%d) != compactTerm(%d)", d.Tag, compactIdx, psTerm, compactTerm)
+		log.Errorf("%s onCompactLog psTerm(%d->%d) != compactTerm(%d)", d.Tag, compactIdx, psTerm, compactTerm)
 		return
 	}
 	//reset truncate index;(这个是放这删除之前还是删除之后？)

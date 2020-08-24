@@ -61,7 +61,8 @@ func (r *Raft) processHeartBeatRequest(req *ReqHeartbeat, resp *RspHeartbeat) {
 	}
 	if r.State == StateLeader {
 		//同一term不可能有两个leader.
-		log.Fatalf("logic error:state is leader")
+		//可能存在脑裂都情况，或者是transfer都情况,所以，这里将 Fatalf 改为 Warnf
+		log.Warnf("logic error:state is leader")
 	}
 	r.Lead = req.LeaderId
 	//2.如果日志在 prevLogIndex 位置处的日志条目的任期号和 prevLogTerm 不匹配，则返回 false （5.3 节）
@@ -196,6 +197,9 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		r.send(m.GetFrom(), &resp)
 		return
 	}
+	//3A:如果有confChange，调整下。
+	r.updatePendingConfByAppendEntries(m.GetEntries())
+	//
 	resp.LastLogIndex = req.PrevLogIndex + uint64(len(req.Entries))
 	if resp.LastLogIndex > r.RaftLog.LastIndex() {
 		log.Warnf("resp.LastLogIndex<%d> != r.RaftLog.LastIndex()<%d>", resp.LastLogIndex, r.RaftLog.LastIndex())
@@ -232,8 +236,16 @@ func (r *Raft) onAppendEntries(m pb.Message) {
 		//还有没发的日志，再次发送.
 		r.sendAppend(m.GetFrom())
 	}
-
+	//leadership transfer state going.
+	if pr.Match == r.RaftLog.LastIndex() && r.leadTransferee == m.GetFrom() {
+		r.sendTimeoutNow(m.GetFrom())
+	}
 	//2-update raftLog commit;
+	r.updatePrCommits()
+	return
+}
+
+func (r *Raft) updatePrCommits() {
 	//	如果存在一个满足N > commitIndex的 N，并且大多数的matchIndex[i] ≥ N成立，并且log[N].term == currentTerm成立，那么令 commitIndex 等于这个 N （5.3 和 5.4 节）
 	var counters = map[uint64]int{}
 	//counters[r.RaftLog.LastIndex()] = 1

@@ -6,7 +6,7 @@ import (
 )
 
 func (r *Raft) elect() {
-	debugf("%d elect", r.id)
+	debugf("%s elect", r.tag)
 	if r.State == StateLeader {
 		//TODO : 是否需要加节点数限制.
 		//if r.peerCount() == 1{
@@ -159,6 +159,16 @@ func (r *Raft) voteCount() int {
 	for _, vote := range r.votes {
 		if vote {
 			voteCnt++
+		}
+	}
+	if r.pendingConf != nil {
+		switch r.pendingConf.ChangeType {
+		case pb.ConfChangeType_AddNode:
+			voteCnt++
+		case pb.ConfChangeType_RemoveNode:
+			voteCnt--
+		default:
+			log.Errorf("unknown ConfChange type:%v", r.pendingConf.GetChangeType())
 		}
 	}
 	return voteCnt
