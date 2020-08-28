@@ -134,15 +134,15 @@ func (d *storeWorker) checkMsg(msg *rspb.RaftMessage) (bool, error) {
 	regionEpoch := region.RegionEpoch
 	// The region in this peer is already destroyed
 	if util.IsEpochStale(fromEpoch, regionEpoch) {
-		log.Infof("tombstone peer receives a stale message. region_id:%d, from_region_epoch:%s, current_region_epoch:%s, msg_type:%s",
-			regionID, fromEpoch, regionEpoch, msgType)
+		log.Infof("%d-%d tombstone peer(%d) receives a stale message. region_id:%d, from_region_epoch:%s, current_region_epoch:%s, msg_type:%s",
+			msg.GetFromPeer().GetId(), msg.GetToPeer().GetId(), fromStoreID, regionID, fromEpoch, regionEpoch, msgType)
 		notExist := util.FindPeer(region, fromStoreID) == nil
 		handleStaleMsg(d.ctx.trans, msg, regionEpoch, isVoteMsg && notExist)
 		return true, nil
 	}
 	if fromEpoch.ConfVer == regionEpoch.ConfVer {
-		return false, errors.Errorf("tombstone peer [epoch: %s] received an invalid message %s, ignore it",
-			regionEpoch, msgType)
+		return false, errors.Errorf("from(%s) tombstone peer [epoch: %s] received an invalid message %s, ignore it",
+			fromEpoch, regionEpoch, msgType)
 	}
 	return false, nil
 }
@@ -198,15 +198,16 @@ func (d *storeWorker) maybeCreatePeer(regionID uint64, msg *rspb.RaftMessage) (b
 		return true, nil
 	}
 	if !util.IsInitialMsg(msg.Message) {
-		log.Debugf("target peer %s doesn't exist", msg.ToPeer)
+		log.Debugf("target peer %d doesn't exist(%s)", regionID, msg.ToPeer)
 		return false, nil
 	}
+	log.TestLog("maybeCreatePeer(%d-%d)(%d->%d)%v", regionID, d.ctx.store.GetId(), msg.GetFromPeer().GetId(), msg.GetToPeer().GetId(), msg.GetMessage().GetMsgType())
 
 	for _, region := range meta.getOverlapRegions(&metapb.Region{
 		StartKey: msg.StartKey,
 		EndKey:   msg.EndKey,
 	}) {
-		log.Debugf("msg %s is overlapped with exist region %s", msg, region)
+		log.TestLog("msg start(%x)end(%x) is overlapped with exist region-%d start(%x)end(%x)", msg.GetStartKey(), msg.GetEndKey(), region.GetId(), region.GetStartKey(), region.GetEndKey())
 		if util.IsFirstVoteMessage(msg.Message) {
 			meta.pendingVotes = append(meta.pendingVotes, msg)
 		}

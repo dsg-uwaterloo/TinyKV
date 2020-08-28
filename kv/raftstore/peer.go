@@ -132,7 +132,7 @@ func NewPeer(storeId uint64, cfg *config.Config, engines *engine_util.Engines, r
 		Applied:       appliedIndex,
 		Storage:       ps,
 	}
-
+	log.TestLog("%s NewPeer region(%+v)", ps.Tag, region)
 	raftGroup, err := raft.NewRawNode(raftCfg)
 	if err != nil {
 		return nil, err
@@ -281,6 +281,7 @@ func (p *peer) CollectPendingPeers() []*metapb.Peer {
 		if id == p.Meta.GetId() {
 			continue
 		}
+		//新增节点，Match==0,truncateIdx至少为5,所以这里就直接到pending中去了.
 		if progress.Match < truncatedIdx {
 			if peer := p.getPeerFromCache(id); peer != nil {
 				pendingPeers = append(pendingPeers, peer)
@@ -394,6 +395,10 @@ func (p *peer) sendRaftMessage(msg eraftpb.Message, trans Transport) error {
 
 //--------------------------------maybe need to add mutex-------------------------------------------
 func (nd *peer) pushCallback(rmw *RaftMsgWrapper, cb *message.Callback) {
+	if cb == nil {
+		//如果cb是nil，说明不需要返回结果，那就没有必要保存了，保存了也是浪费.
+		return
+	}
 	msg := rmw.raftmsg
 	nd.proposals = append(nd.proposals, &proposal{
 		rmw.MsgIdx,
@@ -414,4 +419,9 @@ func (nd *peer) popCallback(rmw *RaftMsgWrapper) (cb CbWrapper) {
 		}
 	}
 	return cb
+}
+
+func (nd *peer) latestFollower() *metapb.Peer {
+	id := nd.RaftGroup.Raft.LatestFollower()
+	return nd.getPeerFromCache(id)
 }

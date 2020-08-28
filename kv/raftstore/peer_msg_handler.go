@@ -1,13 +1,7 @@
 package raftstore
 
 import (
-	"encoding/binary"
 	"fmt"
-	"github.com/pingcap-incubator/tinykv/kv/raftstore/meta"
-	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
-	"github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
-	"github.com/pingcap-incubator/tinykv/raft"
-	"sync/atomic"
 	"time"
 
 	"github.com/Connor1996/badger/y"
@@ -44,283 +38,6 @@ func newPeerMsgHandler(peer *peer, ctx *GlobalContext) *peerMsgHandler {
 	}
 }
 
-var msgIndex uint64
-
-func nextMsgIndex() uint64 {
-	return atomic.AddUint64(&msgIndex, 1)
-}
-
-type raftmsg interface {
-	MarshalTo(dAtA []byte) (int, error)
-	Size() int
-	Unmarshal(dAtA []byte) error
-}
-
-type RaftMsgWrapper struct {
-	//raftmsg
-	//MsgTerm uint64
-	MsgIdx  uint64
-	raftmsg *raft_cmdpb.RaftCmdRequest
-}
-
-func (rmw *RaftMsgWrapper) String() string {
-	return fmt.Sprintf("req_%d_%d", rmw.MsgIdx, rmw.raftmsg.GetHeader().GetTerm())
-}
-
-const termOff = 8
-
-func (rmw *RaftMsgWrapper) Marshal() ([]byte, error) {
-	n := rmw.raftmsg.Size() + termOff
-	buf := make([]byte, n)
-	binary.BigEndian.PutUint64(buf[:termOff], rmw.MsgIdx)
-	_, err := rmw.raftmsg.MarshalTo(buf[termOff:])
-	return buf, err
-}
-
-func (rmw *RaftMsgWrapper) Unmarshal(buf []byte) error {
-	var req raft_cmdpb.RaftCmdRequest
-	err := req.Unmarshal(buf[termOff:])
-	if err != nil {
-		return err
-	}
-	rmw.raftmsg = &req
-	rmw.MsgIdx = binary.BigEndian.Uint64(buf[:termOff])
-	return nil
-}
-
-func (d *peerMsgHandler) raftPropose(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
-	var rmw = RaftMsgWrapper{
-		raftmsg: msg,
-		MsgIdx:  nextMsgIndex(),
-	}
-	util.RSDebugf("raftPropose(%s)", rmw.String())
-	data, err := rmw.Marshal()
-	if err != nil {
-		log.Errorf("raftPropose Marshal err:%s", err.Error())
-		cb.Done(ErrResp(err))
-		return
-	}
-	//record;
-	d.peer.pushCallback(&rmw, cb)
-	//raft process;
-	err = d.peer.RaftGroup.Propose(data)
-	if err != nil {
-		log.Errorf("raftPropose Propose err:%s", err.Error())
-		cb.Done(ErrResp(err))
-		d.peer.popCallback(&rmw)
-		return
-	}
-}
-
-func (d *peerMsgHandler) sendRaftMsg(rd *raft.Ready) {
-	if len(rd.Messages) == 0 {
-		return
-	}
-	util.RSDebugf("%s sendRaftMsg messages(%d)", d.peer.Tag, len(rd.Messages))
-	for idx := 0; idx < len(rd.Messages); idx++ {
-		msg := &rd.Messages[idx]
-		rmsg := &rspb.RaftMessage{
-			RegionId:    d.regionId,
-			FromPeer:    d.peer.Meta,
-			ToPeer:      d.peer.getPeerFromCache(msg.To),
-			Message:     msg,
-			RegionEpoch: d.peer.Region().RegionEpoch,
-		}
-		err := d.ctx.trans.Send(rmsg)
-		if !util.IsHeartbeatMsg(msg.GetMsgType()) {
-			if err != nil {
-				log.Warnf(" %d send %d msg(%v)error:%v", msg.GetFrom(), msg.GetTo(), msg.GetMsgType(), err)
-			} else {
-				util.RSDebugf(" %d send %d msg(%v)", msg.GetFrom(), msg.GetTo(), msg.GetMsgType())
-			}
-		}
-	}
-}
-
-func (d *peerMsgHandler) saveRaftLog(rd *raft.Ready) {
-	if len(rd.Entries) == 0 {
-		return
-	}
-	ent0 := rd.Entries[0]
-	util.RSDebugf("%s saveRaftLog entries(%d:%d;%d)", d.Tag, ent0.Term, ent0.Index, len(rd.Entries))
-	var raftwb engine_util.WriteBatch
-	err := d.peer.peerStorage.Append(rd.Entries, &raftwb)
-	if err != nil {
-		log.Fatalf("saveRaftLog store.Append err:%s", err.Error())
-		return
-	}
-	raftwb.WriteToDB(d.ctx.engine.Raft)
-}
-
-type CbWrapper struct {
-	*message.Callback
-}
-
-func (cb *CbWrapper) Done(resp *raft_cmdpb.RaftCmdResponse) {
-	if cb.Callback != nil {
-		cb.Callback.Done(resp)
-	} else {
-		//可能是其它节点(not leader)，不需要callback.
-	}
-}
-
-func isReadRequest(msg *raft_cmdpb.RaftCmdRequest) bool {
-	if len(msg.GetRequests()) == 0 {
-		return false
-	}
-	cmdtype := msg.GetRequests()[0].GetCmdType()
-	return cmdtype == raft_cmdpb.CmdType_Snap || cmdtype == raft_cmdpb.CmdType_Get
-}
-
-//如果有一条是read,那么全是read.
-func (d *peerMsgHandler) processReadRequest(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) bool {
-	var resps = make([]raft_cmdpb.Response, len(msg.GetRequests()))
-	for idx, req := range msg.GetRequests() {
-		cmd := req.GetCmdType()
-		resps[idx].CmdType = cmd
-		switch cmd {
-		case raft_cmdpb.CmdType_Get:
-			getReq := req.GetGet()
-			value, err := engine_util.GetCF(d.ctx.engine.Kv, getReq.GetCf(), getReq.GetKey())
-			if err != nil {
-				log.Errorf("GetCF error:%s", err.Error())
-			} else {
-				resps[idx].Get = &raft_cmdpb.GetResponse{Value: value}
-				util.RSDebugf("%s processReadRequest GetCF(%s,%s)='%s'", d.Tag, getReq.GetCf(), string(getReq.GetKey()), string(value))
-			}
-		case raft_cmdpb.CmdType_Snap:
-			resps[idx].Snap = &raft_cmdpb.SnapResponse{
-				Region: d.peer.Region(),
-			}
-			cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
-			util.RSDebugf("%s processReadRequest %v", d.Tag, cmd)
-		default:
-			log.Warnf("%s processReadRequest:wrong2 msg type '%v'", d.Tag, cmd)
-			return false
-		}
-	}
-	resp := newCmdResp()
-	//set header;
-	resp.Header.CurrentTerm = msg.GetHeader().GetTerm()
-	for idx := 0; idx < len(resps); idx++ {
-		resp.Responses = append(resp.Responses, &resps[idx])
-	}
-	cb.Done(resp)
-	return true
-}
-
-func (d *peerMsgHandler) processEntry(ent *eraftpb.Entry) {
-	if len(ent.GetData()) == 0 {
-		util.RSDebugf("processEntry %s", ent.String())
-		return
-	}
-	var rmw RaftMsgWrapper
-	err := rmw.Unmarshal(ent.Data)
-	if err != nil {
-		log.Warnf("processEntry Unmarshal err:%s.", err.Error())
-		return
-	}
-	cb := d.peer.popCallback(&rmw)
-	util.RSDebugf("%s processEntry:%s.", d.peer.Tag, rmw.String())
-	if rmw.raftmsg.GetAdminRequest() != nil {
-		d.onAdminRequest(rmw.raftmsg.GetAdminRequest())
-	}
-	//apply;
-	if len(rmw.raftmsg.GetRequests()) == 0 {
-		return
-	}
-	var resps = make([]raft_cmdpb.Response, len(rmw.raftmsg.GetRequests()))
-	var wb engine_util.WriteBatch
-	for idx, req := range rmw.raftmsg.GetRequests() {
-		resps[idx].CmdType = req.CmdType
-		switch req.CmdType {
-		case raft_cmdpb.CmdType_Get:
-			if cb.Callback == nil {
-				continue
-			}
-			getReq := req.GetGet()
-			value, err := engine_util.GetCF(d.ctx.engine.Kv, getReq.GetCf(), getReq.GetKey())
-			if err != nil {
-				log.Errorf("GetCF error:%s", err.Error())
-			} else {
-				resps[idx].Get = &raft_cmdpb.GetResponse{Value: value}
-				util.RSDebugf("%s processEntry GetCF(%s,%s)='%s'", d.Tag, getReq.GetCf(), string(getReq.GetKey()), string(value))
-			}
-		case raft_cmdpb.CmdType_Snap:
-			if cb.Callback == nil {
-				continue
-			}
-			resps[idx].Snap = &raft_cmdpb.SnapResponse{
-				Region: d.peer.Region(),
-			}
-			cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
-			util.RSDebugf("%s processEntry %v", d.Tag, req.CmdType)
-		case raft_cmdpb.CmdType_Put:
-			put := req.GetPut()
-			wb.SetCF(put.GetCf(), put.GetKey(), put.GetValue())
-			resps[idx].Put = &raft_cmdpb.PutResponse{}
-			util.RSDebugf("%s SetCF(%s,%s)='%s'", d.Tag, put.GetCf(), string(put.GetKey()), string(put.GetValue()))
-			//log.Warnf("%s SetCF(%s,%s)='%s'", d.Tag, put.GetCf(), string(put.GetKey()), string(put.GetValue()))
-		case raft_cmdpb.CmdType_Delete:
-			del := req.GetDelete()
-			wb.DeleteCF(del.GetCf(), del.GetKey())
-			resps[idx].Delete = &raft_cmdpb.DeleteResponse{}
-			util.RSDebugf("%s DeleteCF(%s,%s)", d.Tag, del.GetCf(), string(del.GetKey()))
-		default:
-			log.Warnf("processEntry:wrong2 msg type '%v'", req.CmdType)
-		}
-	}
-	err = wb.WriteToDB(d.ctx.engine.Kv)
-	if err != nil {
-		cb.Done(ErrResp(err))
-		log.Error("processEntry error:%s", err.Error())
-		return
-	}
-	resp := newCmdResp()
-	//set header;
-	resp.Header.CurrentTerm = rmw.raftmsg.GetHeader().GetTerm()
-	for idx := 0; idx < len(resps); idx++ {
-		resp.Responses = append(resp.Responses, &resps[idx])
-	}
-	cb.Done(resp)
-}
-
-func (d *peerMsgHandler) HandleRaftReady() {
-	if d.stopped {
-		return
-	}
-	// Your Code Here (2B).
-	raftGroup := d.peer.RaftGroup
-	if !raftGroup.HasReady() {
-		return
-	}
-	//1.stabled;
-	//d.saveRaftLog(&rd)
-	util.RSDebugf("%s HandleRaftReady", d.peer.Tag)
-	rd := raftGroup.Ready()
-	_, err := d.peerStorage.SaveReadyState(&rd)
-	if err != nil {
-		panic(err)
-	}
-	//3.processSnapshot;
-	//2.send msg to peers;
-	d.sendRaftMsg(&rd)
-	//4.apply;
-	if len(rd.CommittedEntries) > 0 {
-		util.RSDebugf("%s HandleRaftReady apply entries(%d)", d.Tag, len(rd.CommittedEntries))
-		for idx := 0; idx < len(rd.CommittedEntries); idx++ {
-			ent := &rd.CommittedEntries[idx]
-			if ent.EntryType == eraftpb.EntryType_EntryConfChange {
-				//TODO : raftGroup.ProposeConfChange()
-			} else {
-				d.processEntry(ent)
-			}
-		}
-	}
-	//5.at last;
-	raftGroup.Advance(rd)
-}
-
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
 	switch msg.Type {
 	case message.MsgTypeRaftMessage:
@@ -347,116 +64,12 @@ func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
 	}
 }
 
-func (d *peerMsgHandler) preProposeRaftCommand(req *raft_cmdpb.RaftCmdRequest) error {
-	// Check store_id, make sure that the msg is dispatched to the right place.
-	if err := util.CheckStoreID(req, d.storeID()); err != nil {
-		return err
-	}
-
-	// Check whether the store has the right peer to handle the request.
-	regionID := d.regionId
-	leaderID := d.LeaderId()
-	if !d.IsLeader() {
-		leader := d.getPeerFromCache(leaderID)
-		return &util.ErrNotLeader{RegionId: regionID, Leader: leader}
-	}
-	// peer_id must be the same as peer's.
-	if err := util.CheckPeerID(req, d.PeerId()); err != nil {
-		return err
-	}
-	// Check whether the term is stale.
-	if err := util.CheckTerm(req, d.Term()); err != nil {
-		return err
-	}
-	err := util.CheckRegionEpoch(req, d.Region(), true)
-	if errEpochNotMatching, ok := err.(*util.ErrEpochNotMatch); ok {
-		// Attach the region which might be split from the current region. But it doesn't
-		// matter if the region is not split from the current region. If the region meta
-		// received by the TiKV driver is newer than the meta cached in the driver, the meta is
-		// updated.
-		siblingRegion := d.findSiblingRegion()
-		if siblingRegion != nil {
-			errEpochNotMatching.Regions = append(errEpochNotMatching.Regions, siblingRegion)
-		}
-		return errEpochNotMatching
-	}
-	return err
-}
-
-func (d *peerMsgHandler) onCompactLog(msg *raft_cmdpb.CompactLogRequest) {
-	compactIdx := msg.GetCompactIndex()
-	compactTerm := msg.GetCompactTerm()
-	//可能是落后的node，需要进行install snapshot，所以直接返回.
-	psLast, err := d.peerStorage.LastIndex()
-	if err != nil {
-		log.Errorf("%s onCompactLog peerStorage.LastIndex() err:%s", d.Tag, err.Error())
-		return
-	}
-	if compactIdx > psLast {
-		log.Errorf(`%s onCompactLog(%d) is lost node(%d)`, d.Tag, compactIdx, psLast)
-		return
-	}
-	//check;
-	term, err := d.RaftGroup.Raft.RaftLog.Term(compactIdx)
-	if err != nil {
-		log.Errorf("%s onCompactLog term(%d) err:%s", d.Tag, compactIdx, err.Error())
-		return
-	}
-	if term != compactTerm {
-		log.Errorf("%s onCompactLog term(%d->%d) != compactTerm(%d) err:%s", d.Tag, compactIdx, term, compactTerm)
-		return
-	}
-	psTerm, err := d.peerStorage.Term(compactIdx)
-	if err != nil {
-		log.Errorf("%s onCompactLog psTerm(%d) err:%s", d.Tag, compactIdx, err.Error())
-		return
-	}
-	if psTerm != compactTerm {
-		log.Errorf("%s onCompactLog psTerm(%d->%d) != compactTerm(%d)", d.Tag, compactIdx, psTerm, compactTerm)
-		return
-	}
-	//reset truncate index;(这个是放这删除之前还是删除之后？)
-	var kvwb engine_util.WriteBatch
-	stor := d.peerStorage
-	stor.applyState.TruncatedState.Index = compactIdx
-	stor.applyState.TruncatedState.Term = compactTerm
-	kvwb.SetMeta(meta.ApplyStateKey(d.regionId), stor.applyState)
-	kvwb.WriteToDB(d.ctx.engine.Kv)
-	//compact;
-	d.ScheduleCompactLog(0, compactIdx)
-
-}
-
-func (d *peerMsgHandler) onAdminRequest(msg *raft_cmdpb.AdminRequest) {
-	switch msg.GetCmdType() {
-	case raft_cmdpb.AdminCmdType_CompactLog:
-		d.onCompactLog(msg.GetCompactLog())
-	default:
-		log.Warnf("'%v' was not support.", msg.GetCmdType())
-	}
-}
-
-func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
-	err := d.preProposeRaftCommand(msg)
-	if err != nil {
-		cb.Done(ErrResp(err))
-		return
-	}
-	// Your Code Here (2B).
-	//if msg.GetAdminRequest() != nil {
-	//	d.onAdminRequest(msg.GetAdminRequest())
-	//	return
-	//}
-	d.raftPropose(msg, cb)
-}
-
 func (d *peerMsgHandler) onTick() {
 	if d.stopped {
 		return
 	}
 	d.ticker.tickClock()
 	if d.ticker.isOnTick(PeerTickRaft) {
-		//util.RSDebugf("onTick PeerTickRaft")
 		d.onRaftBaseTick()
 	}
 	if d.ticker.isOnTick(PeerTickRaftLogGC) {
@@ -475,6 +88,7 @@ func (d *peerMsgHandler) onTick() {
 }
 
 func (d *peerMsgHandler) startTicker() {
+	log.TestLog("%s startTicker", d.Tag)
 	d.ticker = newTicker(d.regionId, d.ctx.cfg)
 	d.ctx.tickDriverSender <- d.regionId
 	d.ticker.schedule(PeerTickRaft)
@@ -486,7 +100,6 @@ func (d *peerMsgHandler) startTicker() {
 func (d *peerMsgHandler) onRaftBaseTick() {
 	d.RaftGroup.Tick()
 	d.ticker.schedule(PeerTickRaft)
-	//d.HandleRaftReady()
 }
 
 func (d *peerMsgHandler) ScheduleCompactLog(firstIndex uint64, truncatedIndex uint64) {
@@ -544,19 +157,6 @@ func (d *peerMsgHandler) onRaftMsg(msg *rspb.RaftMessage) error {
 		d.HeartbeatScheduler(d.ctx.schedulerTaskSender)
 	}
 	return nil
-}
-
-func propose2Str(msg *eraftpb.Message) string {
-	return fmt.Sprintf(`{%v Term:%d Log:{Term:%d Index:%d} commit:%d Reject:%v entries:%d snapshot:%v}`,
-		msg.GetMsgType(), msg.GetTerm(), msg.GetLogTerm(), msg.GetIndex(), msg.GetCommit(),
-		msg.GetReject(), len(msg.GetEntries()), msg.GetSnapshot())
-}
-
-func RaftMsg2Str(msg *rspb.RaftMessage) string {
-	rmsg := msg.GetMessage()
-	return fmt.Sprintf(`{ regionID:%d '%d->%d' message:%v Epoch:%+v IsTombstone:%v "'%s'->'%s'"}`,
-		msg.GetRegionId(), msg.GetFromPeer().GetId(), msg.GetToPeer().GetId(),
-		propose2Str(rmsg), msg.GetRegionEpoch(), msg.GetIsTombstone(), string(msg.GetStartKey()), string(msg.GetEndKey()))
 }
 
 // return false means the message is invalid, and can be ignored.
@@ -669,6 +269,8 @@ func (d *peerMsgHandler) checkSnapshot(msg *rspb.RaftMessage) (*snap.SnapKey, er
 	if msg.Message.Snapshot == nil {
 		return nil, nil
 	}
+	log.TestLog("%s checkSnapshot (%d->%d)regionId=%d",
+		d.Tag, msg.GetFromPeer().GetId(), msg.GetToPeer().GetId(), msg.RegionId)
 	regionID := msg.RegionId
 	snapshot := msg.Message.Snapshot
 	key := snap.SnapKeyFromRegionSnap(regionID, snapshot)
@@ -732,7 +334,8 @@ func (d *peerMsgHandler) destroyPeer() {
 	}
 	d.ctx.router.close(regionID)
 	d.stopped = true
-	if isInitialized && meta.regionRanges.Delete(&regionItem{region: d.Region()}) == nil {
+	rmItem := meta.regionRanges.Delete(&regionItem{region: d.Region()})
+	if isInitialized && rmItem == nil {
 		panic(d.Tag + " meta corruption detected")
 	}
 	if _, ok := meta.regions[regionID]; !ok {

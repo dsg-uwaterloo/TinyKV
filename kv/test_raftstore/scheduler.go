@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"unicode"
 
 	"github.com/google/btree"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/util"
@@ -249,15 +250,36 @@ func (m *MockSchedulerClient) StoreHeartbeat(ctx context.Context, stats *schedul
 	return nil
 }
 
+func key2str(v []byte) string {
+	if len(v) == 0 {
+		return ""
+	}
+	if unicode.IsPrint(rune(v[0])) {
+		return string(v)
+	} else {
+		return fmt.Sprintf("%x", v)
+	}
+}
+
+func region2str(desc string, region *metapb.Region) string {
+	str := fmt.Sprintf("'%s'->'%s';%+v;%+v", key2str(region.GetStartKey()), key2str(region.GetEndKey()), region.GetRegionEpoch(), region.GetPeers())
+	return fmt.Sprintf("%s-%d{%s}", desc, region.GetId(), str)
+}
+
+func rkeys2str(desc string, region *metapb.Region) string {
+	return fmt.Sprintf("%s-%d '%s'->'%s'", desc, region.GetId(), key2str(region.GetStartKey()), key2str(region.GetEndKey()))
+}
+
 func (m *MockSchedulerClient) RegionHeartbeat(req *schedulerpb.RegionHeartbeatRequest) error {
 	debugf("RegionHeartbeat %d", req.Leader.GetId())
 	if err := m.checkBootstrap(); err != nil {
+		log.Fatalf(err.Error())
 		return err
 	}
 
 	m.Lock()
 	defer m.Unlock()
-
+	//log.TestLog("RegionHeartbeat %s", region2str("region", req.GetRegion()))
 	regionID := req.Region.GetId()
 	for _, p := range req.Region.GetPeers() {
 		delete(m.pendingPeers, p.GetId())
@@ -317,7 +339,9 @@ func (m *MockSchedulerClient) handleHeartbeatVersion(region *metapb.Region) erro
 				}
 				return nil
 			}
-
+			//log.TestLog("handleHeartbeatVersion-1 : %s,%+v;%s,%+v",
+			//	rkeys2str("search", searchRegion), searchRegion.GetRegionEpoch(),
+			//	rkeys2str("region", region), region.GetRegionEpoch())
 			if engine_util.ExceedEndKey(searchRegion.GetStartKey(), region.GetEndKey()) {
 				// No range covers [start, end) now, insert directly.
 				m.addRegionLocked(region)
@@ -352,7 +376,6 @@ func (m *MockSchedulerClient) handleHeartbeatConfVersion(region *metapb.Region) 
 			if searchRegionPeerLen-regionPeerLen != 1 {
 				panic("should only one conf change")
 			}
-			fmt.Println(searchRegion, region)
 			if len(GetDiffPeers(searchRegion, region)) != 1 {
 				panic("should only one different peer")
 			}
@@ -380,6 +403,7 @@ func (m *MockSchedulerClient) handleHeartbeatConfVersion(region *metapb.Region) 
 		}
 
 		// update the region.
+		log.TestLog("ReplaceOrInsert %s", rkeys2str("", region))
 		if m.regionsRange.ReplaceOrInsert(&regionItem{region: *region}) == nil {
 			panic("update inexistent region ")
 		}
@@ -479,15 +503,18 @@ func (m *MockSchedulerClient) addRegionLocked(region *metapb.Region) {
 	debugf("test log | region-%d start(%x)end(%x)", region.Id, region.StartKey, region.EndKey)
 	m.regionsKey[region.GetId()] = region.GetStartKey()
 	m.regionsRange.ReplaceOrInsert(&regionItem{region: *region})
+	//log.TestLog("addRegionLocked %s", rkeys2str("region", region))
 }
 
 func (m *MockSchedulerClient) removeRegionLocked(region *metapb.Region) {
 	delete(m.regionsKey, region.GetId())
 	result := m.findRegion(region.GetStartKey())
 	if result == nil || result.region.GetId() != region.GetId() {
+		//log.TestLog("removeRegionLocked failed:%s;%s", rkeys2str("region", region), rkeys2str("result", &result.region))
 		return
 	}
 	m.regionsRange.Delete(result)
+	//log.TestLog("removeRegionLocked %s", rkeys2str("region", region))
 }
 
 // Extra API for tests
@@ -539,11 +566,11 @@ func (m *MockSchedulerClient) scheduleOperator(regionID uint64, op *Operator) {
 // Utilities
 func MustSamePeers(left *metapb.Region, right *metapb.Region) {
 	if len(left.GetPeers()) != len(right.GetPeers()) {
-		panic("unmatched peers length")
+		panic(fmt.Sprintf("unmatched peers length,left(%s)rignt(%s)", left.String(), right))
 	}
 	for _, p := range left.GetPeers() {
 		if FindPeer(right, p.GetStoreId()) == nil {
-			panic("not found the peer")
+			panic(fmt.Sprintf("not found the peer(%s),left(%s)rignt(%s)", p, left.String(), right))
 		}
 	}
 }

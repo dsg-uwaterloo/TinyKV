@@ -185,7 +185,7 @@ func (ps *PeerStorage) Snapshot() (eraftpb.Snapshot, error) {
 		return snapshot, err
 	}
 
-	log.Infof("%s requesting snapshot", ps.Tag)
+	log.Infof("%s requesting snapshot regionId=%+v", ps.Tag, ps.region)
 	ps.snapTriedCnt++
 	ch := make(chan *eraftpb.Snapshot, 1)
 	ps.snapState = snap.SnapState{
@@ -195,6 +195,7 @@ func (ps *PeerStorage) Snapshot() (eraftpb.Snapshot, error) {
 	// schedule snapshot generate task
 	ps.regionSched <- &runner.RegionTaskGen{
 		RegionId: ps.region.GetId(),
+		Id:       ps.Tag,
 		Notifier: ch,
 	}
 	return snapshot, raft.ErrSnapshotTemporarilyUnavailable
@@ -251,6 +252,10 @@ func (ps *PeerStorage) validateSnap(snap *eraftpb.Snapshot) bool {
 	latestEpoch := ps.region.GetRegionEpoch()
 	if snapEpoch.GetConfVer() < latestEpoch.GetConfVer() {
 		log.Infof("%s snapshot epoch is stale, snapEpoch: %s, latestEpoch: %s", ps.Tag, snapEpoch, latestEpoch)
+		return false
+	}
+	if snapData.GetRegion().GetId() == 0 {
+		log.Infof("%s snapshot regionId is 0.", ps.Tag)
 		return false
 	}
 	return true
@@ -377,10 +382,12 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	}
 	//set regionState;
 	region := snapData.GetRegion()
-	if ps.region.GetId() != region.GetId() {
-		log.Errorf(`region(%v) was not myself(%d)`, region, ps.region.GetId())
-		return nil, nil
-	}
+	//可能是新系统加入region，所以导致初始化为0，snapshot的id不为0。
+	//if ps.region.GetId() != region.GetId() {
+	//	log.Errorf(`region(%v) was not myself(%d)`, region, ps.region.GetId())
+	//	return nil, nil
+	//}
+	log.Infof("%s install region=%+v", ps.Tag, region)
 	if false == util.RegionEqual(ps.region, region) {
 		log.Infof(`%s region change to %d.`, ps.Tag, region.Id)
 		asResult.PrevRegion = ps.region
@@ -460,6 +467,7 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	//stable;
 	kvwb.SetMeta(meta.ApplyStateKey(ps.region.GetId()), ps.applyState)
 	raftwb.SetMeta(meta.RaftStateKey(ps.region.GetId()), ps.raftState)
+	//save to db;
 	raftwb.WriteToDB(ps.Engines.Raft)
 	kvwb.WriteToDB(ps.Engines.Kv)
 	return ar, nil

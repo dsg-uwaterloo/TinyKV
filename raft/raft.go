@@ -20,6 +20,7 @@ import (
 	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"math/rand"
+	"strings"
 	"time"
 )
 
@@ -165,7 +166,7 @@ type Raft struct {
 }
 
 func (r *Raft) String() string {
-	return fmt.Sprintf("{id:%d term:%d %v prs:%d log:%s}", r.id, r.Term, r.State, len(r.Prs), r.RaftLog.String())
+	return fmt.Sprintf("{id:%d term:%d %v prs:%s log:%s}", r.id, r.Term, r.State, r.prs2string(), r.RaftLog.String())
 }
 
 // newRaft return a raft peer with the given config
@@ -229,7 +230,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 			r.sendSnapshot(to)
 			return true
 		}
-		log.Warnf("%s makeHeartbeat(%d) error:%s", r.tag, pr.Match, err.Error())
+		//log.Warnf("%s sendAppend(%d) error:%s", r.tag, pr.Match, err.Error())
 		return false
 	}
 	//get entries;
@@ -261,6 +262,10 @@ func (r *Raft) sendHeartbeat(to uint64) {
 // tick advances the internal logical clock by a single tick.
 func (r *Raft) tick() {
 	// Your Code Here (2A).
+	_, ok := r.Prs[r.id]
+	if !ok {
+		return
+	}
 	if r.State == StateLeader {
 		r.heartbeatElapsed++
 		if r.heartbeatElapsed >= r.heartbeatTimeout {
@@ -303,7 +308,47 @@ func (r *Raft) becomeCandidate() { //可能是再次选举。
 	//(5.2)重置选举超时计时器
 	r.electionElapsed = 0
 	r.randomElection()
-	log.Infof("%s goto election(%d)", r.tag, r.Term)
+	log.Infof("%s goto election(%d) %s", r.tag, r.Term, r.prs2string())
+}
+
+func (r *Raft) prs2string() string {
+	var builder strings.Builder
+	builder.WriteString(fmt.Sprintf("Prs(%d){", len(r.Prs)))
+	for id, pr := range r.Prs {
+		builder.WriteString(fmt.Sprintf("%d:{%d,%d},", id, pr.Match, pr.Next))
+	}
+	builder.WriteByte('}')
+	return builder.String()
+}
+
+func (r *Raft) LatestFollower() uint64 {
+	if r.State != StateLeader {
+		log.Warnf("%s was not leader", r.tag)
+		return 0
+	}
+	if len(r.Prs) <= 1 {
+		log.Warnf("%s no follower ", r.tag)
+		return 0
+	}
+	maxLogIdx := r.RaftLog.LastIndex()
+	var biggestId uint64
+	var biggestLog uint64
+	for id, pr := range r.Prs {
+		if id == r.id {
+			continue
+		}
+		if pr.Match == maxLogIdx {
+			return id
+		}
+		if pr.Match > biggestLog {
+			biggestLog = pr.Match
+			biggestId = id
+		}
+	}
+	if biggestId == 0 {
+		log.Fatalf("%s logic error.prs=%s", r.tag, r.prs2string())
+	}
+	return biggestId
 }
 
 // becomeLeader transform this peer's state to leader
@@ -320,7 +365,7 @@ func (r *Raft) becomeLeader() {
 		pr.Next = r.RaftLog.LastIndex() + 1 //初始化为领导人最后索引值加一
 	}
 	log.Infof("%s become to leader: term(%d)index(%d)", r.tag, r.Term, r.RaftLog.LastIndex())
-	log.TestLog("%s become to leader(%d)last(%d)raftLog%s", r.tag, r.Term, r.RaftLog.LastIndex(), r.RaftLog.String())
+	log.TestLog("%s become to leader(%d)last(%d) %s raftLog%s", r.tag, r.Term, r.RaftLog.LastIndex(), r.prs2string(), r.RaftLog.String())
 	//TODO : check - 论文说，每次选举为leader，都会立马发送一条空消息（心跳消息）；但是，这里实现，似乎说data为空都append消息。
 	r.Step(pb.Message{From: 0, To: 0, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{}}})
 	//r.Step(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgBeat})
@@ -329,10 +374,6 @@ func (r *Raft) becomeLeader() {
 // Step the entrance of handle message, see `MessageType`
 // on `eraftpb.proto` for what msgs should be handled
 func (r *Raft) Step(m pb.Message) error {
-	if false == r.isInRaft() {
-		log.Warnf(`%s was not in raft.drop msg(%v)`, r.tag, m.GetMsgType())
-		return fmt.Errorf(`not in raft`)
-	}
 	// Your Code Here (2A).
 	if IsLocalMsg(m.MsgType) {
 		return r.handleLocal(m)
@@ -434,11 +475,19 @@ func (r *Raft) addNode(id uint64) {
 		return
 	}
 	pr := Progress{
-		Match: r.RaftLog.LastIndex(),
-		Next:  r.RaftLog.LastIndex() + 1, //初始化为领导人最后索引值加一
+		Match: 0,
+		Next:  0 + 1, //初始化为领导人最后索引值加一
 	}
 	r.Prs[id] = &pr
-	r.sendAppend(id)
+	//
+	var req = ReqHeartbeat{
+		Term:           r.id,
+		LeaderId:       r.id,
+		PrevLogIndex:   0,
+		PrevLogTerm:    0,
+		LeaderCommitId: 0,
+	}
+	r.send(id, &req)
 	log.Infof(`%s : node-%d add ok.`, r.tag, id)
 	r.PendingConfIndex = 0
 	r.pendingConf = nil
@@ -453,9 +502,11 @@ func (r *Raft) removeNode(id uint64) {
 		return
 	}
 	delete(r.Prs, id)
-	log.Infof(`%s : node-%d delete ok.`, r.tag, id)
-	//删除节点之后，在该log往后都日志，可能已经够multi了，所以需要更新下commit.
-	r.updatePrCommits()
+	log.Infof(`%s : node-%d delete ok.%s. `, r.tag, id, r.prs2string())
+	if id != r.id {
+		//isLeader,删除节点之后，在该log往后都日志，可能已经够multi了，所以需要更新下commit.
+		r.updatePrCommits()
+	}
 	r.PendingConfIndex = 0
 	r.pendingConf = nil
 }
@@ -484,7 +535,9 @@ func (r *Raft) send(to uint64, m message) {
 func (r *Raft) sendSnapshot(to uint64) {
 	sp, err := r.RaftLog.storage.Snapshot()
 	if err != nil {
-		log.Warnf("%s send snapshot err:%s", r.tag, err.Error())
+		if err != ErrSnapshotTemporarilyUnavailable {
+			log.Warnf("%s send snapshot err:%s", r.tag, err.Error())
+		}
 		return
 	}
 	debugf("%s sendSnapshot to(%d)", r.tag, to)
@@ -502,6 +555,8 @@ func (r *Raft) sendSnapshot(to uint64) {
 	lastIndex := r.RaftLog.LastIndex()
 	if pr.Match > lastIndex {
 		log.Errorf("%s sendSnapshot pr.March(%d) > lastIndex(%d)", r.tag, pr.Match, lastIndex)
+	} else {
+		log.Infof("%s node-%d installing snapshot;pr=%d", r.tag, to, pr.Match)
 	}
 }
 
@@ -523,6 +578,10 @@ func (r *Raft) peerCount() int {
 }
 
 func (r *Raft) handleRemote(m pb.Message) error {
+	//if false == r.isInRaft(m.GetFrom()) {
+	//	log.TestLog(`%s drop msg from(%d)`, r.tag, m.GetFrom())
+	//	return fmt.Errorf(`not in raft`)
+	//}
 	//handle net message;
 	if r.State == StateFollower {
 		//收到消息，就重置——如果一个跟随者在一段时间里没有接收到任何消息，也就是选举超时
@@ -576,14 +635,19 @@ func (r *Raft) handlePropose(m pb.Message) {
 	}
 	debugf("'%d->%d'%v(ents=%d)", r.id, m.GetTo(), m.GetMsgType(), len(m.GetEntries()))
 	//append logs;
+	//NOTICE-3B:check-防止一个过程中有多个节点变化.
+	for _, e := range m.GetEntries() {
+		if e.EntryType == pb.EntryType_EntryConfChange && r.PendingConfIndex != 0 {
+			log.Errorf("%s was confChange ing....", r.tag)
+			return
+		}
+	}
 	rlog := r.RaftLog
 	lastIndex := rlog.LastIndex()
 	for _, e := range m.GetEntries() {
-		//if e.Data != nil {
 		e.Term = r.Term
 		e.Index = lastIndex + 1
 		rlog.entries = append(rlog.entries, *e)
-		//}
 	}
 	if r.peerCount() == 1 {
 		rlog.committed = rlog.LastIndex()
@@ -635,6 +699,11 @@ func (r *Raft) handleTransferLeader(m pb.Message) {
 		r.sendPb(r.Lead, m)
 		return
 	}
+	if r.id == m.GetFrom() {
+		//可能是transfer之后，没有及时更新，导致一直在发送transfer消息.
+		//log.Fatalf("%s is leader now.", r.tag)
+		return
+	}
 	//如果是leader，那么就向transfer 发送 timeout 消息.
 	transfee := m.GetFrom()
 	if r.leadTransferee != None {
@@ -662,6 +731,10 @@ func (r *Raft) handleTransferLeader(m pb.Message) {
 }
 
 func (r *Raft) handleTimeoutNow(m pb.Message) {
+	if _, ok := r.Prs[r.id]; !ok {
+		log.Warnf("%s was not in raft.drop msg(%v)", r.tag, m.GetMsgType())
+		return
+	}
 	log.Warnf(`%s handleTimeoutNow(%d) `, r.tag, m.GetFrom())
 	var hb ReqHeartbeat
 	hb.fromPbMsg(m)

@@ -157,7 +157,7 @@ func (l *RaftLog) maybeCompact(id uint64) {
 	} else {
 		l.entries = l.entries[:0]
 	}
-	log.Infof("%d compact [%d,%d)", id, firstEntry.Index, sFirst)
+	log.Infof("raft-%d compact [%d,%d)", id, firstEntry.Index, sFirst)
 }
 
 // unstableEntries return all the unstable entries

@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/gogo/protobuf/sortkeys"
 	"github.com/pingcap-incubator/tinykv/log"
@@ -44,7 +45,7 @@ func (r *Raft) processHeartBeatRequest(req *ReqHeartbeat, resp *RspHeartbeat) {
 	//}
 	//1.如果term < currentTerm返回 false （5.2 节）
 	if req.Term < curTerm {
-		log.Warnf("req.Term(%d) < curTerm(%d)", req.Term, curTerm)
+		log.Warnf("%s req.Term(%d) < curTerm(%d)", r.tag, req.Term, curTerm)
 		return
 	}
 	// 如果接收到的 RPC 请求或响应中，任期号T > currentTerm，那么就令 currentTerm 等于 T，并切换状态为跟随者（5.1 节）
@@ -140,6 +141,9 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
 	var req ReqHeartbeat
 	req.fromPbMsg(m)
+	if req.LeaderCommitId == 0 {
+		return
+	}
 	var resp RspHeartbeat
 	debugf("handleHeartbeat '%d->%d'(%v):%v", m.GetFrom(), m.GetTo(), m.GetMsgType(), req)
 	//
@@ -172,24 +176,76 @@ func (r *Raft) onHeartbeat(m pb.Message) {
 	//成功处理.
 }
 
+func (r *Raft) preProcessAppendEntries(req *ReqAppend) {
+	elen := len(req.Entries)
+	if elen == 0 {
+		return
+	}
+	//NOTICE-3B:虽然leader地方已经过滤来一次有两个confChange.
+	//  但是，leader是不会知道，follower这边可能有一个confChange正在进行时
+	//  上次到到这里仅仅是commit状态，要这一轮才会apply，所以需要做下校验
+	//  这里选择直接truncate req.Entries，考虑到下次还可以继续sendAppend.
+	//1- PendingConfIndex 没有值.
+	if r.PendingConfIndex == 0 {
+		for idx, ent := range req.Entries {
+			if ent.EntryType == pb.EntryType_EntryConfChange {
+				if r.PendingConfIndex > 0 {
+					//已经存在，那么就截断.
+					req.Entries = req.Entries[:idx]
+					return
+				} else {
+					r.PendingConfIndex = ent.Index
+				}
+			} //end confChange
+		}
+		return
+	}
+	//2- PendingConfIndex 已经有值，那么需要跟entries对比.
+	first := req.Entries[0]
+	if first.Index > r.PendingConfIndex {
+		//只需要如果有ConfChange，直接截断.
+		for idx, ent := range req.Entries {
+			if ent.EntryType == pb.EntryType_EntryConfChange {
+				req.Entries = req.Entries[:idx]
+				return
+			}
+		}
+		return
+	}
+	//3- PendingConfIndex > first,说明新日志和老日志存在冲突，由于pending还没有apply，直接置0就可以来。
+	r.PendingConfIndex = 0
+	for idx, ent := range req.Entries {
+		if ent.EntryType == pb.EntryType_EntryConfChange {
+			if r.PendingConfIndex > 0 {
+				//已经存在，那么就截断.
+				req.Entries = req.Entries[:idx]
+				return
+			} else {
+				r.PendingConfIndex = ent.Index
+			}
+		} //end confChange
+	}
+	return
+}
+
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
 	var req ReqAppend
 	req.fromPbMsg(m)
-
+	r.preProcessAppendEntries(&req)
 	//for log
 	req.Entries = nil
 	debugf("handleAppendEntries '%d->%d'(%v):%+v(ents=%d)", m.GetFrom(), m.GetTo(), m.GetMsgType(), req, len(m.GetEntries()))
 	req.Entries = m.GetEntries()
 
 	var resp RspAppend
-
 	r.processHeartBeatRequest(&req.ReqHeartbeat, &resp.RspHeartbeat)
 	if false == resp.Success {
 		r.send(m.GetFrom(), &resp)
 		return
 	}
+
 	//3.如果已经存在的日志条目和新的产生冲突（索引值相同但是任期号不同），删除这一条和之后所有的 （5.3 节）
 	//4.附加日志中尚未存在的任何新条目
 	if false == r.processEntries(m.GetEntries()) {
@@ -197,8 +253,6 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		r.send(m.GetFrom(), &resp)
 		return
 	}
-	//3A:如果有confChange，调整下。
-	r.updatePendingConfByAppendEntries(m.GetEntries())
 	//
 	resp.LastLogIndex = req.PrevLogIndex + uint64(len(req.Entries))
 	if resp.LastLogIndex > r.RaftLog.LastIndex() {
@@ -246,6 +300,9 @@ func (r *Raft) onAppendEntries(m pb.Message) {
 }
 
 func (r *Raft) updatePrCommits() {
+	if r.State != StateLeader {
+		return
+	}
 	//	如果存在一个满足N > commitIndex的 N，并且大多数的matchIndex[i] ≥ N成立，并且log[N].term == currentTerm成立，那么令 commitIndex 等于这个 N （5.3 和 5.4 节）
 	var counters = map[uint64]int{}
 	//counters[r.RaftLog.LastIndex()] = 1
@@ -255,7 +312,9 @@ func (r *Raft) updatePrCommits() {
 	}
 	sortLogIndex := make([]uint64, 0, len(counters))
 	for logidx, _ := range counters {
-		sortLogIndex = append(sortLogIndex, logidx)
+		if logidx > r.RaftLog.committed {
+			sortLogIndex = append(sortLogIndex, logidx)
+		}
 	}
 	sortkeys.Uint64s(sortLogIndex)
 	prvCnt := 0
@@ -263,18 +322,24 @@ func (r *Raft) updatePrCommits() {
 	total := r.peerCount()
 	for ; last >= 0; last-- {
 		logidx := sortLogIndex[last]
+		if logidx < r.RaftLog.committed {
+			//可能会存在落后很多多节点，所以，需要判断下.
+			break
+		}
 		cnt := counters[logidx] + prvCnt
 		if IsMajor(cnt, total) {
-			//并且log[N].term == currentTerm成立(就说说，不是自己都，不commit)
+			//并且log[N].term == currentTerm成立(就是说，不是自己的，不commit)
 			term, err := r.RaftLog.Term(logidx)
 			if err != nil {
-				log.Warnf("commit err:term(%d) err:%s", logidx, err.Error())
+				log.Warnf("%s commit err:term(%d) err:%s", r.tag, logidx, err.Error())
+				d, _ := json.Marshal(r.Prs)
+				log.Fatalf("%s leader(%d) total=%d;cnt=%d;prevCnt=%d;prs=%+v;logIdxs=%+v;counters=%+v", r.tag, r.Lead, total, cnt, prvCnt, string(d), sortLogIndex, counters)
 			} else {
 				if term == r.Term {
 					if r.RaftLog.committed < logidx {
 						r.RaftLog.committed = logidx
 						//update the commit id to follower;
-						debugf("update commit %d", r.RaftLog.committed)
+						debugf("%s update commit %d", r.tag, r.RaftLog.committed)
 						r.broadcastAppend()
 					}
 				}
@@ -286,24 +351,26 @@ func (r *Raft) updatePrCommits() {
 	}
 }
 
+var ErrNeedLeader = fmt.Errorf("need leader can do")
+
 func (r *Raft) makeHeartbeat(pr *Progress, hb *ReqHeartbeat) error {
 	if r.State != StateLeader {
-		return fmt.Errorf("i(%d) was not leader", r.id)
+		return ErrNeedLeader
 	}
 	hb.Term = r.Term
 	hb.LeaderId = r.id
 	hb.LeaderCommitId = r.RaftLog.committed
-	if pr.Match > 0 {
-		hb.PrevLogIndex = pr.Match
-		t, err := r.RaftLog.Term(pr.Match)
-		if err != nil {
+	//if pr.Match > 0 {
+	hb.PrevLogIndex = pr.Match
+	t, err := r.RaftLog.Term(pr.Match)
+	if err != nil {
 
-			return err
-		}
-		hb.PrevLogTerm = t
-	} else {
-		//如果没有日志，那么就默认值（1）.
-		hb.PrevLogTerm = 0
+		return err
 	}
+	hb.PrevLogTerm = t
+	//} else {
+	//	//如果没有日志，那么就默认值（1）.
+	//	hb.PrevLogTerm = 0
+	//}
 	return nil
 }

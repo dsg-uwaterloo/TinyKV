@@ -1,7 +1,6 @@
 package raft
 
 import (
-	"encoding/json"
 	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
@@ -34,11 +33,16 @@ func (r *Raft) updatePendingConfByAppendEntries(entries []*pb.Entry) {
 			}
 		}
 	}
+	//if r.PendingConfIndex == 0{
+	//	if r.pendingConf.ChangeType == pb.ConfChangeType_AddNode{
+	//		if
+	//	}
+	//}
 }
 
 //本节点是否还在raft系统中?
-func (r *Raft) isInRaft() bool {
-	_, ok := r.Prs[r.id]
+func (r *Raft) isInRaft(id uint64) bool {
+	_, ok := r.Prs[id]
 	return ok
 }
 
@@ -48,9 +52,9 @@ func fromEntry(ent *pb.Entry) *pb.ConfChange {
 		return nil
 	}
 	var cc pb.ConfChange
-	err := json.Unmarshal(ent.Data, &cc)
+	err := cc.Unmarshal(ent.Data)
 	if err != nil {
-		log.Error(`fromEntry error:%s`, err.Error())
+		log.Errorf(`fromEntry error:%s.`, err.Error())
 		return nil
 	}
 	return &cc
@@ -71,4 +75,10 @@ func (r *Raft) sendTimeoutNow(transfee uint64) {
 	toMsg.MsgType = pb.MessageType_MsgTimeoutNow
 	r.sendPb(transfee, toMsg)
 	r.leadTransferee = None
+}
+
+func (r *Raft) ResetPrs() {
+	r.Prs = map[uint64]*Progress{
+		r.id: &Progress{0, 0},
+	}
 }

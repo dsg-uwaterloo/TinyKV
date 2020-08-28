@@ -89,7 +89,7 @@ func (r *RaftstoreRouter) SendRaftMessage(msg *raft_serverpb.RaftMessage) error 
 	regionID := msg.RegionId
 	//raft 正常消息通讯.send to raftWorker.run
 	if r.router.send(regionID, message.NewPeerMsg(message.MsgTypeRaftMessage, regionID, msg)) != nil {
-		//conf change;配置文件变更.
+		//conf change;配置文件变更.send to storeWorker.run
 		r.router.sendStore(message.NewPeerMsg(message.MsgTypeStoreRaftMessage, regionID, msg))
 	}
 	return nil

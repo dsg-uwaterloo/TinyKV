@@ -65,6 +65,7 @@ func (r *SchedulerTaskHandler) Start() {
 	r.SchedulerClient.SetRegionHeartbeatResponseHandler(r.storeID, r.onRegionHeartbeatResponse)
 }
 
+//TODO: confChange/transferLeader trigger.
 func (r *SchedulerTaskHandler) onRegionHeartbeatResponse(resp *schedulerpb.RegionHeartbeatResponse) {
 	if changePeer := resp.GetChangePeer(); changePeer != nil {
 		r.sendAdminRequest(resp.RegionId, resp.RegionEpoch, resp.TargetPeer, &raft_cmdpb.AdminRequest{

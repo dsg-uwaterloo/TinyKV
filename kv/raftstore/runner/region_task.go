@@ -24,7 +24,8 @@ import (
 // `RegionTaskDestroy` which will clean up the key range from StartKey to EndKey.
 
 type RegionTaskGen struct {
-	RegionId uint64                   // specify the region which the task is for.
+	RegionId uint64 // specify the region which the task is for.
+	Id       string
 	Notifier chan<- *eraftpb.Snapshot // when it finishes snapshot generating, it notifies notifier.
 }
 
@@ -61,7 +62,7 @@ func (r *regionTaskHandler) Handle(t worker.Task) {
 		task := t.(*RegionTaskGen)
 		// It is safe for now to handle generating and applying snapshot concurrently,
 		// but it may not when merge is implemented.
-		r.ctx.handleGen(task.RegionId, task.Notifier)
+		r.ctx.handleGen(task.RegionId, task.Notifier, task.Id)
 	case *RegionTaskApply:
 		task := t.(*RegionTaskApply)
 		log.Infof(`RegionTaskApply(%d) ,snapshot(%+v)`, task.RegionId, task.SnapMeta)
@@ -79,8 +80,8 @@ type snapContext struct {
 }
 
 // handleGen handles the task of generating snapshot of the Region.
-func (snapCtx *snapContext) handleGen(regionId uint64, notifier chan<- *eraftpb.Snapshot) {
-	snap, err := doSnapshot(snapCtx.engines, snapCtx.mgr, regionId)
+func (snapCtx *snapContext) handleGen(regionId uint64, notifier chan<- *eraftpb.Snapshot, id string) {
+	snap, err := doSnapshot(snapCtx.engines, snapCtx.mgr, regionId, id)
 	if err != nil {
 		log.Errorf("failed to generate snapshot!!!, [regionId: %d, err : %v]", regionId, err)
 	} else {
@@ -161,7 +162,7 @@ func getAppliedIdxTermForSnapshot(raft *badger.DB, kv *badger.Txn, regionId uint
 	return idx, term, nil
 }
 
-func doSnapshot(engines *engine_util.Engines, mgr *snap.SnapManager, regionId uint64) (*eraftpb.Snapshot, error) {
+func doSnapshot(engines *engine_util.Engines, mgr *snap.SnapManager, regionId uint64, id string) (*eraftpb.Snapshot, error) {
 	log.Debugf("begin to generate a snapshot. [regionId: %d]", regionId)
 
 	txn := engines.Kv.NewTransaction(false)
@@ -185,6 +186,7 @@ func doSnapshot(engines *engine_util.Engines, mgr *snap.SnapManager, regionId ui
 	}
 
 	region := regionState.GetRegion()
+	log.TestLog("%s snapshot get region(%x)=%+v", id, meta.RegionStateKey(regionId), region)
 	confState := util.ConfStateFromRegion(region)
 	snapshot := &eraftpb.Snapshot{
 		Metadata: &eraftpb.SnapshotMetadata{

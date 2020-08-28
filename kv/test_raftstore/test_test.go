@@ -667,10 +667,9 @@ func TestOneSplit3B(t *testing.T) {
 	for i := 100; i < 200; i++ {
 		cluster.MustPut([]byte(fmt.Sprintf("k%d", i)), []byte(fmt.Sprintf("v%d", i)))
 	}
-
 	time.Sleep(200 * time.Millisecond)
 	cluster.ClearFilters()
-
+	//'k2' > 'k100'
 	left := cluster.GetRegion([]byte("k1"))
 	right := cluster.GetRegion([]byte("k2"))
 
@@ -685,6 +684,26 @@ func TestOneSplit3B(t *testing.T) {
 	assert.NotNil(t, resp.GetHeader().GetError().GetKeyNotInRegion())
 
 	MustGetEqual(cluster.engines[5], []byte("k100"), []byte("v100"))
+	//plugins; check values in region'2'
+	time.Sleep(time.Second)
+	cluster.MustGet([]byte("k1"), []byte("v1"))
+	cluster.MustGet([]byte("k2"), []byte("v2"))
+
+	//
+	cluster.MustPut([]byte("k3"), []byte("v3"))
+	region3 := cluster.GetRegion([]byte("k3"))
+	assert.Equal(t, region3.GetId(), right.GetId())
+	assert.True(t, bytes.Equal(region3.GetStartKey(), right.GetStartKey()))
+	assert.True(t, bytes.Equal(region3.GetEndKey(), right.GetEndKey()))
+	//
+	cluster.MustPut([]byte("k0"), []byte("v0"))
+	region4 := cluster.GetRegion([]byte("k0"))
+	assert.Equal(t, left.GetId(), region4.GetId())
+	assert.True(t, bytes.Equal(left.GetStartKey(), region4.GetStartKey()))
+	assert.True(t, bytes.Equal(left.GetEndKey(), region4.GetEndKey()))
+	//
+	cluster.MustGet([]byte("k0"), []byte("v0"))
+	cluster.MustGet([]byte("k3"), []byte("v3"))
 }
 
 func TestSplitRecover3B(t *testing.T) {

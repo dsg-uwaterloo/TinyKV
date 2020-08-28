@@ -36,3 +36,18 @@ func TestBootstrapStore(t *testing.T) {
 	require.Nil(t, err)
 	require.True(t, empty)
 }
+
+func TestRegionRange(t *testing.T) {
+	tmp := &metapb.Region{Id: 1}
+	sm := newStoreMeta()
+	regions := sm.getOverlapRegions(&metapb.Region{})
+	require.Nil(t, regions)
+	//insert;
+	sm.regionRanges.ReplaceOrInsert(&regionItem{tmp})
+	regions = sm.getOverlapRegions(&metapb.Region{})
+	require.NotNil(t, regions)
+	//delete;
+	sm.regionRanges.Delete(&regionItem{tmp})
+	regions = sm.getOverlapRegions(&metapb.Region{})
+	require.Nil(t, regions)
+}

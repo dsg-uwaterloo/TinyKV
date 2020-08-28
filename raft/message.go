@@ -97,8 +97,17 @@ type ReqAppend struct {
 }
 
 func (ra *ReqAppend) copyEntries(ents []pb.Entry) {
+	hasConfChange := false
 	for _, e := range ents {
 		tmp := new(pb.Entry)
+		if e.EntryType == pb.EntryType_EntryConfChange {
+			//一次最多传一个ConfChange消息.
+			if hasConfChange {
+				return
+			} else {
+				hasConfChange = true
+			}
+		}
 		*tmp = e
 		ra.Entries = append(ra.Entries, tmp)
 	}

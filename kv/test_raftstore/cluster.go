@@ -245,7 +245,7 @@ func (c *Cluster) CallCommandOnLeader(request *raft_cmdpb.RaftCmdRequest, timeou
 				} else {
 					leader = c.LeaderOfRegion(regionID)
 				}
-				log.Debugf("encouter retryable err(%d->%d) %+v", oldLeader.GetId(), leader.GetId(), resp)
+				log.TestLog("encouter retryable err(%d->%d) %+v", oldLeader.GetId(), leader.GetId(), resp)
 				continue
 			}
 		}

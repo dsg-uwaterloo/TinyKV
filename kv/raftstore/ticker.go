@@ -2,6 +2,7 @@ package raftstore
 
 import (
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/util"
+	"github.com/pingcap-incubator/tinykv/log"
 	"time"
 
 	"github.com/pingcap-incubator/tinykv/kv/config"
@@ -29,7 +30,7 @@ func newTicker(regionID uint64, cfg *config.Config) *ticker {
 	t.schedules[int(PeerTickRaftLogGC)].interval = int64(cfg.RaftLogGCTickInterval / baseInterval)
 	t.schedules[int(PeerTickSplitRegionCheck)].interval = int64(cfg.SplitRegionCheckTickInterval / baseInterval)
 	t.schedules[int(PeerTickSchedulerHeartbeat)].interval = int64(cfg.SchedulerHeartbeatTickInterval / baseInterval)
-	util.RSDebugf("newTicker base(%d)raft(%d)raftLogGC(%d)SplitRegionCheck(%d)SchedulerHeartbeat(%d)",
+	util.RSDebugf("newTicker(%d) base(%d)raft(%d)raftLogGC(%d)SplitRegionCheck(%d)SchedulerHeartbeat(%d)", regionID,
 		baseInterval, t.schedules[int(PeerTickRaft)].interval,
 		t.schedules[int(PeerTickRaftLogGC)].interval,
 		t.schedules[int(PeerTickSplitRegionCheck)].interval,
@@ -110,6 +111,7 @@ func (r *tickDriver) run() {
 		case <-timer:
 			for regionID := range r.regions {
 				if r.router.send(regionID, message.NewPeerMsg(message.MsgTypeTick, regionID, nil)) != nil {
+					log.TestLog("tickDriver remove region %d", regionID)
 					delete(r.regions, regionID)
 				}
 			}
@@ -118,6 +120,7 @@ func (r *tickDriver) run() {
 			if !ok {
 				return
 			}
+
 			r.regions[regionID] = struct{}{}
 		}
 	}

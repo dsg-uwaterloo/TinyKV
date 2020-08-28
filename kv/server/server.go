@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"github.com/pingcap-incubator/tinykv/kv/raftstore/util"
 	"github.com/pingcap-incubator/tinykv/log"
 
 	"github.com/pingcap-incubator/tinykv/kv/coprocessor"
@@ -35,23 +36,28 @@ func NewServer(storage storage.Storage) *Server {
 }
 
 // The below functions are Server's gRPC API (implements TinyKvServer).
-
 // Raw API.
 func (server *Server) RawGet(_ context.Context, req *kvrpcpb.RawGetRequest) (*kvrpcpb.RawGetResponse, error) {
+	var resp kvrpcpb.RawGetResponse
 	// Your Code Here (1).
 	reader, err := server.storage.Reader(req.GetContext())
 	if err != nil {
 		log.Errorf("RawGet error:%s", err.Error())
-		return nil, err
+		resp.RegionError = util.RaftstoreErrToPbError(err)
+		resp.Error = err.Error()
+		return &resp, nil
 	}
 	defer reader.Close()
 	//get ;
 	value, err := reader.GetCF(req.Cf, req.Key)
 	if err != nil {
 		log.Errorf("RawGet error:%s", err.Error())
-		return nil, err
+		resp.RegionError = util.RaftstoreErrToPbError(err)
+		resp.Error = err.Error()
+		return &resp, nil
 	}
-	var resp kvrpcpb.RawGetResponse
+	log.TestLog("RawGet %s=%s", string(req.GetKey()), string(value))
+
 	resp.Value = value
 	if len(value) == 0 {
 		resp.NotFound = true
@@ -60,6 +66,7 @@ func (server *Server) RawGet(_ context.Context, req *kvrpcpb.RawGetRequest) (*kv
 }
 
 func (server *Server) RawPut(_ context.Context, req *kvrpcpb.RawPutRequest) (*kvrpcpb.RawPutResponse, error) {
+	var resp kvrpcpb.RawPutResponse
 	// Your Code Here (1).
 	var modify = storage.Put{
 		Key:   req.GetKey(),
@@ -69,39 +76,46 @@ func (server *Server) RawPut(_ context.Context, req *kvrpcpb.RawPutRequest) (*kv
 
 	err := server.storage.Write(req.GetContext(), []storage.Modify{{modify}})
 	if err != nil {
-		return nil, err
+		log.Errorf("RawPut error:%s", err.Error())
+		resp.RegionError = util.RaftstoreErrToPbError(err)
+		resp.Error = err.Error()
+		return &resp, nil
 	}
-	return &kvrpcpb.RawPutResponse{}, nil
+	return &resp, nil
 }
 
 func (server *Server) RawDelete(_ context.Context, req *kvrpcpb.RawDeleteRequest) (*kvrpcpb.RawDeleteResponse, error) {
+	var resp kvrpcpb.RawDeleteResponse
 	// Your Code Here (1).
 	modify := storage.Delete{Key: req.GetKey(), Cf: req.GetCf()}
 	err := server.storage.Write(req.GetContext(), []storage.Modify{{modify}})
 	if err != nil {
-		return nil, err
+		log.Errorf("RawDelete error:%s", err.Error())
+		resp.RegionError = util.RaftstoreErrToPbError(err)
+		resp.Error = err.Error()
+		return &resp, nil
 	}
-	return &kvrpcpb.RawDeleteResponse{}, nil
+	return &resp, nil
 }
 
 func (server *Server) RawScan(_ context.Context, req *kvrpcpb.RawScanRequest) (*kvrpcpb.RawScanResponse, error) {
+	var resp kvrpcpb.RawScanResponse
 	// Your Code Here (1).
 	reader, err := server.storage.Reader(req.GetContext())
 	if err != nil {
-		log.Errorf("RawGet error:%s", err.Error())
-		return nil, err
+		log.Errorf("RawScan error:%s", err.Error())
+		resp.RegionError = util.RaftstoreErrToPbError(err)
+		resp.Error = err.Error()
+		return &resp, nil
 	}
 	defer reader.Close()
 	itr := reader.IterCF(req.GetCf())
 	defer itr.Close()
 	itr.Seek(req.GetStartKey())
 	//get ;
-	var resp kvrpcpb.RawScanResponse
 	for itr.Valid() && req.Limit > 0 {
 		item := itr.Item()
 		var kv = new(kvrpcpb.KvPair)
-		//item.KeyCopy(kv.Key)
-		//item.ValueCopy(kv.Value)
 		kv.Key = item.Key()
 		kv.Value, _ = item.Value()
 		resp.Kvs = append(resp.Kvs, kv)
