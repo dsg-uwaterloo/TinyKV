@@ -195,6 +195,9 @@ func (c *Cluster) Request(key []byte, reqs []*raft_cmdpb.Request, timeout time.D
 			SleepMS(100)
 			continue
 		}
+		//if reqs[0].GetSnap() != nil {
+		//	log.TestLog("snapshot(%d-%s)", region.GetId(), string(key))
+		//}
 		return resp, txn
 	}
 	panic("request timeout")
@@ -245,7 +248,7 @@ func (c *Cluster) CallCommandOnLeader(request *raft_cmdpb.RaftCmdRequest, timeou
 				} else {
 					leader = c.LeaderOfRegion(regionID)
 				}
-				log.TestLog("encouter retryable err(%d->%d) %+v", oldLeader.GetId(), leader.GetId(), resp)
+				log.Debugf("encouter retryable err(%d->%d) %+v", oldLeader.GetId(), leader.GetId(), resp)
 				continue
 			}
 		}
@@ -395,6 +398,9 @@ func (c *Cluster) ScanLeader(start, end []byte) ([][]byte, uint64) {
 		leaderId = resp.Header.GetCurrentTerm()
 		region := resp.Responses[0].GetSnap().Region
 		iter := raft_storage.NewRegionReader(txn, *region).IterCF(engine_util.CfDefault)
+		//
+		//lastValue := ""
+		//cnt := 0
 		for iter.Seek(key); iter.Valid(); iter.Next() {
 			if engine_util.ExceedEndKey(iter.Item().Key(), end) {
 				break
@@ -404,8 +410,11 @@ func (c *Cluster) ScanLeader(start, end []byte) ([][]byte, uint64) {
 				panic(err)
 			}
 			values = append(values, value)
+			//lastValue = string(value)
+			//cnt++
 		}
 		iter.Close()
+		//log.TestLog("ScanLeader(%d)(%d)=%s", region.Id, cnt, lastValue)
 
 		key = region.EndKey
 		if len(key) == 0 {

@@ -344,6 +344,7 @@ func (d *peerMsgHandler) processEntry(ent *eraftpb.Entry) {
 			if cb.Callback == nil {
 				continue
 			}
+			//log.TestLog("%s processEntry Snapshot", d.Tag)
 			resps[idx].Snap = &raft_cmdpb.SnapResponse{
 				Region: d.peer.Region(),
 			}
@@ -351,11 +352,23 @@ func (d *peerMsgHandler) processEntry(ent *eraftpb.Entry) {
 			util.RSDebugf("%s processEntry %v", d.Tag, req.CmdType)
 		case raft_cmdpb.CmdType_Put:
 			put := req.GetPut()
+			err := util.CheckKeyInRegion(put.GetKey(), d.Region())
+			if err != nil {
+				log.Errorf("%s CheckKeyInRegion error:%s", d.Tag, err.Error())
+				cb.Done(ErrResp(err))
+				return
+			}
 			wb.SetCF(put.GetCf(), put.GetKey(), put.GetValue())
 			resps[idx].Put = &raft_cmdpb.PutResponse{}
 			util.RSDebugf("%s SetCF(%s,%s)='%s'", d.Tag, put.GetCf(), string(put.GetKey()), string(put.GetValue()))
 		case raft_cmdpb.CmdType_Delete:
 			del := req.GetDelete()
+			err := util.CheckKeyInRegion(del.GetKey(), d.Region())
+			if err != nil {
+				log.Errorf("%s CheckKeyInRegion error:%s", d.Tag, err.Error())
+				cb.Done(ErrResp(err))
+				return
+			}
 			wb.DeleteCF(del.GetCf(), del.GetKey())
 			resps[idx].Delete = &raft_cmdpb.DeleteResponse{}
 			util.RSDebugf("%s DeleteCF(%s,%s)", d.Tag, del.GetCf(), string(del.GetKey()))
@@ -472,11 +485,12 @@ func (d *peerMsgHandler) onAdminRequest(hdr *raft_cmdpb.RaftRequestHeader, msg *
 func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
 	err := d.preProposeRaftCommand(msg)
 	if err != nil {
+		//log.Errorf("%s proposeRaftCommand err:%s", d.Tag, err.Error())
 		cb.Done(ErrResp(err))
 		return
 	}
 	//Your Code Here (2B).
-	if d.processNoreplicate(msg, cb) {
+	if true == d.processNoreplicate(msg, cb) {
 		return
 	}
 	d.raftPropose(msg, cb)
@@ -741,24 +755,43 @@ func (d *peerMsgHandler) CreateRegion(region *metapb.Region, req *raft_cmdpb.Spl
 		log.Errorf("%s CreateRegion not found %d in region=%+v", d.Tag, myStoreId, region)
 		return nil
 	}
+	engines := d.peerStorage.Engines
 	//init;
-	newRegion, err := PrepareBootstrap(d.peerStorage.Engines, newPeer.GetStoreId(), req.GetNewRegionId(), newPeer.GetId())
-	if err != nil {
-		log.Errorf("%s CreateRegion err:%s", d.Tag, err.Error())
-		return nil
+	newRegion := &metapb.Region{
+		Id:       req.GetNewRegionId(),
+		StartKey: []byte{},
+		EndKey:   []byte{},
+		RegionEpoch: &metapb.RegionEpoch{
+			Version: InitEpochVer,
+			ConfVer: InitEpochConfVer,
+		},
+		Peers: newPeerList,
 	}
-	//set new region;
-	newRegion.Peers = newPeerList
+	var kvwb engine_util.WriteBatch
 	newRegion.StartKey = req.GetSplitKey()
 	newRegion.EndKey = region.GetEndKey()
+	writeInitialApplyState(&kvwb, region.Id)
+	meta.WriteRegionState(&kvwb, newRegion, rspb.PeerState_Normal)
+	err := engines.WriteKV(&kvwb)
+	if err != nil {
+		log.Errorf("%s onRegionSplit new-%d writeToKV err:%s", d.Tag, newRegion.GetId(), err.Error())
+		return nil
+	}
+
+	raftWB := new(engine_util.WriteBatch)
+	writeInitialRaftState(raftWB, region.Id)
+	err = engines.WriteRaft(raftWB)
+	if err != nil {
+		log.Errorf("%s onRegionSplit new-%d writeToRaft err:%s", d.Tag, newRegion.GetId(), err.Error())
+		return nil
+	}
 	//reset region;
 	region.EndKey = req.GetSplitKey()
 	region.RegionEpoch.Version++
 	//save to db;
-	var kvwb engine_util.WriteBatch
-	meta.WriteRegionState(&kvwb, newRegion, rspb.PeerState_Normal)
+	kvwb.Reset()
 	meta.WriteRegionState(&kvwb, region, rspb.PeerState_Normal)
-	err = kvwb.WriteToDB(d.peerStorage.Engines.Kv)
+	err = engines.WriteKV(&kvwb)
 	if err != nil {
 		log.Errorf("%s onRegionSplit writeToDB err:%s", d.Tag, err.Error())
 		return nil

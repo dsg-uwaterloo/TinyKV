@@ -126,12 +126,15 @@ func (bs *Raftstore) loadPeers() ([]*peer, error) {
 		for it.Seek(startKey); it.Valid(); it.Next() {
 			item := it.Item()
 			if bytes.Compare(item.Key(), endKey) >= 0 {
+				//log.TestLog("%d break key=%x", storeID, item.Key())
 				break
 			}
 			regionID, suffix, err := meta.DecodeRegionMetaKey(item.Key())
 			if err != nil {
+				log.Errorf("loadPeers err:%s", err.Error())
 				return err
 			}
+			//log.TestLog("%d region %d suffix %d.", storeID, regionID, suffix)
 			if suffix != meta.RegionStateSuffix {
 				continue
 			}

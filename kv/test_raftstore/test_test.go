@@ -145,6 +145,35 @@ func confchanger(t *testing.T, cluster *Cluster, ch chan bool, done *int32) {
 	}
 }
 
+func checkRegion(cluster *Cluster, storeId int) {
+	return
+	startKey := meta.RegionMetaMinKey
+	endKey := meta.RegionMetaMaxKey
+	db1 := cluster.engines[uint64(storeId)].Kv
+	err := db1.View(func(txn *badger.Txn) error {
+		// get all regions from RegionLocalState
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer it.Close()
+		for it.Seek(startKey); it.Valid(); it.Next() {
+			item := it.Item()
+			if bytes.Compare(item.Key(), endKey) >= 0 {
+				log.TestLog("checkRegion-%d break key=%x", storeId, item.Key())
+				break
+			}
+			regionID, suffix, err := meta.DecodeRegionMetaKey(item.Key())
+			if err != nil {
+				log.Errorf("checkRegion  err:%s", err.Error())
+				return err
+			}
+			log.TestLog("checkRegion %d region %d suffix %d.", storeId, regionID, suffix)
+		}
+		return nil
+	})
+	if err != nil {
+		log.TestLog("checkRegion %d err:%s", storeId, err.Error())
+	}
+}
+
 // Basic test is as follows: one or more clients submitting Put/Scan
 // operations to set of servers for some period of time.  After the period is
 // over, test checks that all sequential values are present and in order for a
@@ -214,9 +243,12 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			j := 0
 			defer func() {
 				clnts[cli] <- j
+				log.Infof("GenericTest(%d) : set finish.", cli)
 			}()
 			last := ""
 			var lastLeader uint64
+			lastKey := ""
+			lastvalue := ""
 			for atomic.LoadInt32(&done_clients) == 0 {
 				if (rand.Int() % 1000) < 500 {
 					key := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", j)
@@ -225,6 +257,8 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 					lastLeader = cluster.MustPutLeader([]byte(key), []byte(value))
 					last = NextValue(last, value)
 					j++
+					lastKey = key
+					lastvalue = value
 				} else {
 					start := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", 0)
 					end := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", j)
@@ -236,6 +270,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 					}
 				}
 			}
+			log.Infof("GenericTest '%s'='%s'.", lastKey, lastvalue)
 		})
 
 		if partitions {
@@ -259,7 +294,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			// have submitted a request in a minority.  That request
 			// won't return until that server discovers a new term
 			// has started.
-			log.Warnf("ClearFilters")
+			log.Warnf("GenericTest ClearFilters")
 			cluster.ClearFilters()
 			// wait for a while so that we have a new term
 			time.Sleep(electionTimeout)
@@ -269,24 +304,28 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 		<-ch_clients
 
 		if crash {
-			log.Warnf("shutdown servers\n")
+
+			log.Infof("GenericTest shutdown servers\n")
 			for i := 1; i <= nservers; i++ {
+				checkRegion(cluster, i)
 				cluster.StopServer(uint64(i))
 			}
 			// Wait for a while for servers to shutdown, since
 			// shutdown isn't a real crash and isn't instantaneous
 			time.Sleep(electionTimeout)
-			log.Warnf("restart servers\n")
+			log.Infof("GenericTest  restart servers\n")
+
 			// crash and re-start all
 			for i := 1; i <= nservers; i++ {
 				cluster.StartServer(uint64(i))
+				checkRegion(cluster, i)
 			}
 		}
 
 		for cli := 0; cli < nclients; cli++ {
 			// log.Printf("read from clients %d\n", cli)
 			j := <-clnts[cli]
-
+			log.Infof("GenericTest check scan data")
 			// if j < 10 {
 			// 	log.Printf("Warning: client %d managed to perform only %d put operations in 1 sec?\n", i, j)
 			// }
@@ -295,7 +334,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			values, leader := cluster.ScanLeader([]byte(start), []byte(end))
 			v := string(bytes.Join(values, []byte("")))
 			checkClntAppends(t, cli, v, j, leader)
-
+			log.Infof("GenericTest check delete data")
 			for k := 0; k < j; k++ {
 				key := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", k)
 				cluster.MustDelete([]byte(key))
@@ -303,6 +342,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 		}
 
 		if maxraftlog > 0 {
+			log.Infof("GenericTest max catch")
 			// Check maximum after the servers have processed all client
 			// requests and had time to checkpoint.
 			key := []byte("")
@@ -334,6 +374,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 		}
 
 		if split {
+			log.Infof("GenericTest split check")
 			r := cluster.GetRegion([]byte(""))
 			if len(r.GetEndKey()) == 0 {
 				t.Fatalf("region is not split")

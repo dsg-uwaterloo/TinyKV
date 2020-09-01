@@ -1,6 +1,7 @@
 package raftstore
 
 import (
+	"github.com/pingcap-incubator/tinykv/log"
 	"sync"
 	"sync/atomic"
 
@@ -46,6 +47,7 @@ func (pr *router) register(peer *peer) {
 		peer: peer,
 	}
 	pr.peers.Store(id, newPeer)
+	log.Infof("%p register %s", pr, peer.Tag)
 }
 
 func (pr *router) close(regionID uint64) {
@@ -54,6 +56,7 @@ func (pr *router) close(regionID uint64) {
 		ps := v.(*peerState)
 		atomic.StoreUint32(&ps.closed, 1)
 		pr.peers.Delete(regionID)
+		log.Infof("%p close %s", pr, ps.peer.Tag)
 	}
 }
 
@@ -61,6 +64,11 @@ func (pr *router) send(regionID uint64, msg message.Msg) error {
 	msg.RegionID = regionID
 	p := pr.get(regionID)
 	if p == nil || atomic.LoadUint32(&p.closed) == 1 {
+		//pr.peers.Range(func(k, v interface{}) bool {
+		//	log.TestLog("%d : %s", k.(uint64), v.(*peerState).peer.Tag)
+		//	return true
+		//})
+		//log.Fatalf("%p regionID=%d", pr, regionID)
 		return errPeerNotFound
 	}
 	pr.peerSender <- msg
@@ -102,5 +110,6 @@ func (r *RaftstoreRouter) SendRaftCommand(req *raft_cmdpb.RaftCmdRequest, cb *me
 		Callback: cb,
 	}
 	regionID := req.Header.RegionId
-	return r.router.send(regionID, message.NewPeerMsg(message.MsgTypeRaftCmd, regionID, cmd))
+	msg := message.NewPeerMsg(message.MsgTypeRaftCmd, regionID, cmd)
+	return r.router.send(regionID, msg)
 }

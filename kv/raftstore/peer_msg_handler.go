@@ -88,7 +88,7 @@ func (d *peerMsgHandler) onTick() {
 }
 
 func (d *peerMsgHandler) startTicker() {
-	log.TestLog("%s startTicker", d.Tag)
+	//log.Debugf("%s startTicker", d.Tag)
 	d.ticker = newTicker(d.regionId, d.ctx.cfg)
 	d.ctx.tickDriverSender <- d.regionId
 	d.ticker.schedule(PeerTickRaft)
