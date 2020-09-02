@@ -1,6 +1,7 @@
 package raftstore
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"github.com/gogo/protobuf/sortkeys"
@@ -210,9 +211,9 @@ func (d *peerMsgHandler) sendRaftMsg(rd *raft.Ready) {
 		err := d.ctx.trans.Send(rmsg)
 		if !util.IsHeartbeatMsg(msg.GetMsgType()) {
 			if err != nil {
-				log.Warnf(" %d send %d msg(%v)error:%v", msg.GetFrom(), msg.GetTo(), msg.GetMsgType(), err)
+				log.Warnf("%s '%d->%d' msg(%v)error:%v", d.Tag, msg.GetFrom(), msg.GetTo(), msg.GetMsgType(), err)
 			} else {
-				util.RSDebugf(" %d send %d msg(%v)", msg.GetFrom(), msg.GetTo(), msg.GetMsgType())
+				util.RSDebugf("%s '%d->%d' msg(%v)", d.Tag, msg.GetFrom(), msg.GetTo(), msg.GetMsgType())
 			}
 		}
 	}
@@ -254,66 +255,67 @@ func isReadRequest(msg *raft_cmdpb.RaftCmdRequest) bool {
 }
 
 //如果有一条是read,那么全是read.
-func (d *peerMsgHandler) processReadRequest(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) bool {
-	var resps = make([]raft_cmdpb.Response, len(msg.GetRequests()))
-	for idx, req := range msg.GetRequests() {
-		cmd := req.GetCmdType()
-		resps[idx].CmdType = cmd
-		switch cmd {
-		case raft_cmdpb.CmdType_Get:
-			getReq := req.GetGet()
-			var value []byte
-			err := util.CheckKeyInRegion(getReq.GetKey(), d.Region())
-			if err == nil {
-				value, err = engine_util.GetCF(d.ctx.engine.Kv, getReq.GetCf(), getReq.GetKey())
-			}
-			if err != nil {
-				log.Errorf("GetCF error:%s", err.Error())
-			} else {
-				resps[idx].Get = &raft_cmdpb.GetResponse{Value: value}
-				util.RSDebugf("%s processReadRequest GetCF(%s,%s)='%s'", d.Tag, getReq.GetCf(), string(getReq.GetKey()), string(value))
-			}
-		case raft_cmdpb.CmdType_Snap:
-			resps[idx].Snap = &raft_cmdpb.SnapResponse{
-				Region: d.peer.Region(),
-			}
-			cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
-			util.RSDebugf("%s processReadRequest %v", d.Tag, cmd)
-		default:
-			log.Warnf("%s processReadRequest:wrong2 msg type '%v'", d.Tag, cmd)
-			return false
-		}
-	}
-	resp := newCmdResp()
-	//set header;
-	resp.Header.CurrentTerm = msg.GetHeader().GetTerm()
-	for idx := 0; idx < len(resps); idx++ {
-		resp.Responses = append(resp.Responses, &resps[idx])
-	}
-	cb.Done(resp)
-	return true
-}
+//func (d *peerMsgHandler) processReadRequest(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) bool {
+//	var resps = make([]raft_cmdpb.Response, len(msg.GetRequests()))
+//	for idx, req := range msg.GetRequests() {
+//		cmd := req.GetCmdType()
+//		resps[idx].CmdType = cmd
+//		switch cmd {
+//		case raft_cmdpb.CmdType_Get:
+//			getReq := req.GetGet()
+//			var value []byte
+//			err := util.CheckKeyInRegion(getReq.GetKey(), d.Region())
+//			if err == nil {
+//				value, err = engine_util.GetCF(d.ctx.engine.Kv, getReq.GetCf(), getReq.GetKey())
+//			}
+//			if err != nil {
+//				log.Errorf("GetCF error:%s", err.Error())
+//			} else {
+//				resps[idx].Get = &raft_cmdpb.GetResponse{Value: value}
+//				util.RSDebugf("%s processReadRequest GetCF(%s,%s)='%s'", d.Tag, getReq.GetCf(), string(getReq.GetKey()), string(value))
+//			}
+//		case raft_cmdpb.CmdType_Snap:
+//			resps[idx].Snap = &raft_cmdpb.SnapResponse{
+//				Region: d.peer.Region(),
+//			}
+//			cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
+//			util.RSDebugf("%s processReadRequest %v", d.Tag, cmd)
+//		default:
+//			log.Warnf("%s processReadRequest:wrong2 msg type '%v'", d.Tag, cmd)
+//			return false
+//		}
+//	}
+//	resp := newCmdResp()
+//	//set header;
+//	resp.Header.CurrentTerm = msg.GetHeader().GetTerm()
+//	for idx := 0; idx < len(resps); idx++ {
+//		resp.Responses = append(resp.Responses, &resps[idx])
+//	}
+//	cb.Done(resp)
+//	return true
+//}
 
-func (d *peerMsgHandler) processEntry(ent *eraftpb.Entry) {
-	if len(ent.GetData()) == 0 {
-		util.RSDebugf("processEntry %s", ent.String())
-		return
-	}
-	var rmw RaftMsgWrapper
-	err := rmw.Unmarshal(ent.Data)
-	if err != nil {
-		log.Warnf("processEntry Unmarshal err:%s.", err.Error())
-		return
-	}
-	cb := d.peer.popCallback(&rmw)
-	util.RSDebugf("%s processEntry:%s.", d.peer.Tag, rmw.String())
-	if rmw.raftmsg.GetAdminRequest() != nil {
-		d.onAdminRequest(rmw.raftmsg.GetHeader(), rmw.raftmsg.GetAdminRequest())
-	}
-	//apply;
+func (d *peerMsgHandler) processEntry_raftMsg(rmw *RaftMsgWrapper) {
 	if len(rmw.raftmsg.GetRequests()) == 0 {
 		return
 	}
+	cb := d.peer.popCallback(rmw)
+	epoch := d.Region().GetRegionEpoch()
+	hdrEpoch := rmw.raftmsg.GetHeader().GetRegionEpoch()
+	// This is a little difference for `check_region_epoch` in region split case.
+	// Here we just need to check `version` because `conf_ver` will be update
+	// to the latest value of the peer, and then send to Scheduler.
+	if hdrEpoch.Version != epoch.Version {
+		log.Infof("%s epoch changed, retry later, prev_epoch: %s, epoch %s", d.Tag, hdrEpoch, epoch)
+		rErr := &util.ErrEpochNotMatch{
+			Message: fmt.Sprintf("%s epoch changed %s != %s, retry later", d.Tag, hdrEpoch, epoch),
+			Regions: []*metapb.Region{d.Region()},
+		}
+		cb.Done(ErrResp(rErr))
+		return
+	}
+	var err error
+
 	var resps = make([]raft_cmdpb.Response, len(rmw.raftmsg.GetRequests()))
 	var wb engine_util.WriteBatch
 	for idx, req := range rmw.raftmsg.GetRequests() {
@@ -338,7 +340,7 @@ func (d *peerMsgHandler) processEntry(ent *eraftpb.Entry) {
 			} else {
 				resps[idx].Get = &raft_cmdpb.GetResponse{Value: value}
 				util.RSDebugf("%s processEntry GetCF(%s,%s)='%s'", d.Tag, getReq.GetCf(), string(getReq.GetKey()), string(value))
-				log.TestLog("%s processEntry GetCF(%s,%s)='%s'", d.Tag, getReq.GetCf(), string(getReq.GetKey()), string(value))
+				//log.TestLog("%s processEntry GetCF(%s,%s)='%s'", d.Tag, getReq.GetCf(), string(getReq.GetKey()), string(value))
 			}
 		case raft_cmdpb.CmdType_Snap:
 			if cb.Callback == nil {
@@ -346,7 +348,7 @@ func (d *peerMsgHandler) processEntry(ent *eraftpb.Entry) {
 			}
 			//log.TestLog("%s processEntry Snapshot", d.Tag)
 			resps[idx].Snap = &raft_cmdpb.SnapResponse{
-				Region: d.peer.Region(),
+				Region: d.Region(),
 			}
 			cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
 			util.RSDebugf("%s processEntry %v", d.Tag, req.CmdType)
@@ -389,6 +391,26 @@ func (d *peerMsgHandler) processEntry(ent *eraftpb.Entry) {
 		resp.Responses = append(resp.Responses, &resps[idx])
 	}
 	cb.Done(resp)
+}
+
+func (d *peerMsgHandler) processEntry(ent *eraftpb.Entry) {
+	if len(ent.GetData()) == 0 {
+		util.RSDebugf("processEntry %s", ent.String())
+		return
+	}
+	var rmw RaftMsgWrapper
+	err := rmw.Unmarshal(ent.Data)
+	if err != nil {
+		log.Warnf("processEntry Unmarshal err:%s.", err.Error())
+		return
+	}
+
+	util.RSDebugf("%s processEntry:%s.", d.peer.Tag, rmw.String())
+	if rmw.raftmsg.GetAdminRequest() != nil {
+		d.onAdminRequest(rmw.raftmsg.GetHeader(), rmw.raftmsg.GetAdminRequest())
+	}
+	//apply;
+	d.processEntry_raftMsg(&rmw)
 }
 
 func (d *peerMsgHandler) preProposeRaftCommand(req *raft_cmdpb.RaftCmdRequest) error {
@@ -517,7 +539,7 @@ var ccIndex uint64
 func adminConfChangeResp(cmd raft_cmdpb.AdminCmdType, cb *message.Callback, desc string) {
 	if cb != nil {
 		if cmd == raft_cmdpb.AdminCmdType_ChangePeer {
-			log.TestLog(`%s and resp`, desc)
+			log.Debugf(`%s and resp`, desc)
 		}
 		resp := newCmdResp()
 		resp.AdminResponse = &raft_cmdpb.AdminResponse{
@@ -531,7 +553,7 @@ func adminConfChangeResp(cmd raft_cmdpb.AdminCmdType, cb *message.Callback, desc
 		}
 		cb.Done(resp)
 	} else {
-		log.TestLog(desc)
+		log.Debugf(desc)
 	}
 }
 
@@ -636,7 +658,7 @@ func (d *peerMsgHandler) removeNode(region *metapb.Region, cc *eraftpb.ConfChang
 	//find peer;
 	peer := d.peer.getPeerFromCache(nodeId)
 	if nil == util.RemovePeer(region, peer.GetStoreId()) {
-		log.TestLog("%s has removed node(%s) before.", d.Tag, nodeTag)
+		log.Infof("%s has removed node(%s) before.", d.Tag, nodeTag)
 		//need do nothing;
 		return
 	}
@@ -694,13 +716,37 @@ func (d *peerMsgHandler) updateConfChange(cc *eraftpb.ConfChange) {
 //  1、先创建new-region（peer设置好，但是没有keys）.
 //  2、根据peer来创建peer.
 //  3、分割keys: new/old region split keys
+func checkSplitKey(split, start, end []byte) bool {
+	//需要start < split < end ，否则split没有意义.
+	ret1 := false //start < split;
+	if len(start) == 0 {
+		ret1 = true
+	} else { //len(start) > 0
+		ret1 = (bytes.Compare(start, split) < 0)
+	}
+	if false == ret1 {
+		return false
+	}
+	//split < end
+	if len(end) == 0 {
+		return true
+	}
+	return bytes.Compare(split, end) < 0
+}
 func (d *peerMsgHandler) onRegionSplit(hdr *raft_cmdpb.RaftRequestHeader, req *raft_cmdpb.SplitRequest) {
-	log.Infof("%s onRegionSplit %s ", d.Tag, req)
+
 	region := new(metapb.Region)
 	err := util.CloneMsg(d.Region(), region)
 	if err != nil {
 		log.Warnf("%s onRegionSplit err:%s", d.Tag, err.Error())
 		return
+	}
+	if !checkSplitKey(req.GetSplitKey(), region.GetStartKey(), region.GetEndKey()) {
+		//[start<end)<=splitKey;可能会触发多次split.
+		//log.Warnf("%s onRegionSplit start(%x) end(%x) split(%x)req=%s", d.Tag, region.GetStartKey(), region.GetEndKey(), req.GetSplitKey(), req)
+		return
+	} else {
+		log.Infof("%s onRegionSplit %s ", d.Tag, req)
 	}
 	if len(region.GetPeers()) != len(req.GetNewPeerIds()) {
 		log.Errorf("%s len(region.GetPeers())<%d> != len(req.GetNewPeerIds())<%d>", d.Tag, len(region.GetPeers()), len(req.GetNewPeerIds()))
@@ -730,7 +776,10 @@ func (d *peerMsgHandler) onRegionSplit(hdr *raft_cmdpb.RaftRequestHeader, req *r
 	ctx.storeMeta.regions[region.GetId()] = region
 	d.SetRegion(region)
 	//
-	log.Infof("%s onRegionSplit(%s-%d) ok ", d.Tag, newPeer.Tag, newPeer.Meta.StoreId)
+	log.Infof("%s onRegionSplit(%s-%d) ok. {%d:'%s'->'%s'},{%d:'%s'->'%s'} ",
+		d.Tag, newPeer.Tag, newPeer.Meta.StoreId,
+		region.GetId(), region.GetStartKey(), region.GetEndKey(),
+		newRegion.GetId(), newRegion.GetStartKey(), newRegion.GetStartKey())
 }
 
 func (d *peerMsgHandler) CreateRegion(region *metapb.Region, req *raft_cmdpb.SplitRequest) *metapb.Region {

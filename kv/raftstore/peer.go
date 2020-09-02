@@ -132,7 +132,7 @@ func NewPeer(storeId uint64, cfg *config.Config, engines *engine_util.Engines, r
 		Applied:       appliedIndex,
 		Storage:       ps,
 	}
-	log.TestLog("%s NewPeer region(%+v)", ps.Tag, region)
+	log.Infof("%s NewPeer region(%+v)", ps.Tag, region)
 	raftGroup, err := raft.NewRawNode(raftCfg)
 	if err != nil {
 		return nil, err

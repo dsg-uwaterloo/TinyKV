@@ -20,7 +20,6 @@ import (
 	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"math/rand"
-	"strings"
 	"time"
 )
 
@@ -220,13 +219,16 @@ func newRaft(c *Config) *Raft {
 // sendAppend sends an append RPC with new entries (if any) and the
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
+	if false == r.isLeader() {
+		return false
+	}
 	// Your Code Here (2A).
 	var req ReqAppend
 	pr := r.Prs[to]
 	err := r.makeHeartbeat(pr, &req.ReqHeartbeat)
 	if err != nil {
 		if err == ErrCompacted {
-			log.Warnf("%s sendAppend(%d,%v) error:%s.do sendSnapshot.", r.tag, to, pr, err.Error())
+			log.Warnf("%s sendAppend(%d,%v) ErrCompacted.do sendSnapshot.", r.tag, to, pr)
 			r.sendSnapshot(to)
 			return true
 		}
@@ -247,6 +249,9 @@ func (r *Raft) sendAppend(to uint64) bool {
 
 // sendHeartbeat sends a heartbeat RPC to the given peer.
 func (r *Raft) sendHeartbeat(to uint64) {
+	if false == r.isLeader() {
+		return
+	}
 	// Your Code Here (2A).
 	var req ReqHeartbeat
 	pr := r.Prs[to]
@@ -254,8 +259,10 @@ func (r *Raft) sendHeartbeat(to uint64) {
 	if err == nil {
 		r.send(to, &req)
 	} else {
-		log.Warnf("%s sendHeartbeat(%d,%v) error:%s. do sendSnapshot", r.tag, to, pr, err.Error())
-		r.sendSnapshot(to)
+		if err == ErrCompacted {
+			log.Warnf("%s sendHeartbeat(%d,%d) ErrCompacted.do sendSnapshot.", r.tag, to, pr.Match)
+			r.sendSnapshot(to)
+		}
 	}
 }
 
@@ -266,7 +273,7 @@ func (r *Raft) tick() {
 	if !ok {
 		return
 	}
-	if r.State == StateLeader {
+	if r.isLeader() {
 		r.heartbeatElapsed++
 		if r.heartbeatElapsed >= r.heartbeatTimeout {
 			//TODO : do heartbeat;
@@ -288,6 +295,8 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	r.Lead = lead
 	r.State = StateFollower
 	r.Vote = lead
+	//可能之前是从Candidate过来的，所以这里先要置空,否则可能出现多leader情况.
+	r.votes = nil
 	//election reset;
 	r.electionElapsed = 0
 	r.randomElection()
@@ -308,47 +317,7 @@ func (r *Raft) becomeCandidate() { //可能是再次选举。
 	//(5.2)重置选举超时计时器
 	r.electionElapsed = 0
 	r.randomElection()
-	log.Infof("%s goto election(%d) %s", r.tag, r.Term, r.prs2string())
-}
-
-func (r *Raft) prs2string() string {
-	var builder strings.Builder
-	builder.WriteString(fmt.Sprintf("Prs(%d){", len(r.Prs)))
-	for id, pr := range r.Prs {
-		builder.WriteString(fmt.Sprintf("%d:{%d,%d},", id, pr.Match, pr.Next))
-	}
-	builder.WriteByte('}')
-	return builder.String()
-}
-
-func (r *Raft) LatestFollower() uint64 {
-	if r.State != StateLeader {
-		log.Warnf("%s was not leader", r.tag)
-		return 0
-	}
-	if len(r.Prs) <= 1 {
-		log.Warnf("%s no follower ", r.tag)
-		return 0
-	}
-	maxLogIdx := r.RaftLog.LastIndex()
-	var biggestId uint64
-	var biggestLog uint64
-	for id, pr := range r.Prs {
-		if id == r.id {
-			continue
-		}
-		if pr.Match == maxLogIdx {
-			return id
-		}
-		if pr.Match > biggestLog {
-			biggestLog = pr.Match
-			biggestId = id
-		}
-	}
-	if biggestId == 0 {
-		log.Fatalf("%s logic error.prs=%s", r.tag, r.prs2string())
-	}
-	return biggestId
+	log.Infof("%s goto election(%d)last=%d; %s", r.tag, r.Term, r.RaftLog.LastIndex(), r.prs2string())
 }
 
 // becomeLeader transform this peer's state to leader
@@ -356,16 +325,17 @@ func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
 	r.State = StateLeader
+	//oldVotes := r.votes
 	r.votes = nil
 	r.Lead = r.id
-	r.heartbeatTimeout = 0
+	r.heartbeatElapsed = 0
 	//选举后重新初始化(progress)
 	for _, pr := range r.Prs {
 		pr.Match = r.RaftLog.LastIndex()
 		pr.Next = r.RaftLog.LastIndex() + 1 //初始化为领导人最后索引值加一
 	}
 	log.Infof("%s become to leader: term(%d)index(%d)", r.tag, r.Term, r.RaftLog.LastIndex())
-	log.TestLog("%s become to leader(%d)last(%d) %s raftLog%s", r.tag, r.Term, r.RaftLog.LastIndex(), r.prs2string(), r.RaftLog.String())
+	//log.TestLog("%s become to leader(%d)last(%d);prs=%s;votes=%+v;raftLog%s;", r.tag, r.Term, r.RaftLog.LastIndex(), r.prs2string(), oldVotes, r.RaftLog.String())
 	//TODO : check - 论文说，每次选举为leader，都会立马发送一条空消息（心跳消息）；但是，这里实现，似乎说data为空都append消息。
 	r.Step(pb.Message{From: 0, To: 0, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{}}})
 	//r.Step(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgBeat})
@@ -427,7 +397,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 		return
 	}
 	if lastIndex < r.RaftLog.LastIndex() {
-		log.Errorf("logic error:snap.lastIndex(%d)<local.lastIndex(%d);raftLog%s", lastIndex, r.RaftLog.LastIndex(), r.RaftLog.String())
+		log.Errorf("%s logic error:snap.lastIndex(%d)<local.lastIndex(%d);raftLog%s", r.tag, lastIndex, r.RaftLog.LastIndex(), r.RaftLog.String())
 		//r.sendPb(rsp.To, rsp)
 		return
 	}
@@ -533,6 +503,9 @@ func (r *Raft) send(to uint64, m message) {
 }
 
 func (r *Raft) sendSnapshot(to uint64) {
+	if false == r.isLeader() {
+		return
+	}
 	sp, err := r.RaftLog.storage.Snapshot()
 	if err != nil {
 		if err != ErrSnapshotTemporarilyUnavailable {
@@ -549,6 +522,7 @@ func (r *Raft) sendSnapshot(to uint64) {
 	r.sendPb(to, msg)
 	//update pr;
 	pr := r.Prs[to]
+	old := pr.Match
 	pr.Match = sp.GetMetadata().GetIndex()
 	pr.Next = pr.Match + 1
 	//
@@ -556,7 +530,7 @@ func (r *Raft) sendSnapshot(to uint64) {
 	if pr.Match > lastIndex {
 		log.Errorf("%s sendSnapshot pr.March(%d) > lastIndex(%d)", r.tag, pr.Match, lastIndex)
 	} else {
-		log.Infof("%s node-%d installing snapshot;pr=%d", r.tag, to, pr.Match)
+		log.Debugf("%s ->node-%d sendSnapshot pr=%d->%d", r.tag, to, old, pr.Match)
 	}
 }
 
@@ -674,6 +648,8 @@ func (r *Raft) handleBeat(m pb.Message) {
 		log.Warnf("I'm(%d) not leader", r.id)
 		return
 	}
+	//心跳定时清零，否则会不断发心跳.
+	r.heartbeatElapsed = 0
 	debugf("%d %v", r.id, m.GetMsgType())
 	if r.peerCount() == 1 {
 		return
@@ -739,10 +715,10 @@ func (r *Raft) handleTimeoutNow(m pb.Message) {
 	var hb ReqHeartbeat
 	hb.fromPbMsg(m)
 	var resp RspAppend
-	r.processHeartBeatRequest(&hb, &resp.RspHeartbeat)
+	r.processHeartBeatRequest(&hb, &resp.RspHeartbeat, m.GetFrom())
 	//如果失败，就需要触发追日志，所以需要会append都响应消息。
 	if resp.Success == false {
-		r.send(m.GetFrom(), &resp)
+		log.Errorf("%s handleTimeoutNow failed,from(%d)", r.tag, m.GetFrom())
 		return
 	}
 	//校验成功,处理timeout now.

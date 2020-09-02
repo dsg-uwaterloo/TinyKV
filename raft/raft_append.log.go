@@ -17,27 +17,25 @@ func (r *Raft) onHeartbeatsFailed(to uint64, resp *RspHeartbeat, doAgain func(to
 	//reset mach;
 	pr := r.Prs[to]
 	if pr.Match == 0 {
-		log.Errorf("peer(%d)mach is zero.logic error.", to)
+		log.Fatalf("%s peer(%d)(term=%d)mach is zero.logic error.%+v;%s", r.tag, to, r.Term, resp, r.prs2string())
+		return
+	}
+	//NOTICE-raft:如果不是本轮次到，直接忽略.
+	if pr.Match != resp.reqPrevLogIndex {
+		log.Warnf("%s pr(%d):not this round message=%+v", r.tag, pr.Match, resp)
 		return
 	}
 	pr.Match--
 	pr.Next = pr.Match + 1
-	//d : do later;
-	//_, err := r.RaftLog.pos(pr.Match)
-	//switch err {
-	//case ErrUnavailableSmall, ErrUnavailableEmpty:
-	//	//没有更小等日志了，直接发snapshot;
-	//	r.sendSnapshot(to)
-	//	return
-	//}
-	//signal beat;
 	doAgain(to)
 }
 
-func (r *Raft) processHeartBeatRequest(req *ReqHeartbeat, resp *RspHeartbeat) {
+func (r *Raft) processHeartBeatRequest(req *ReqHeartbeat, resp *RspHeartbeat, from uint64) {
 	curTerm := r.Term
 	resp.Term = curTerm
 	resp.Success = false
+	resp.reqPrevLogIndex = req.PrevLogIndex
+	resp.reqPrevLogTerm = req.PrevLogTerm
 	//0. check args; 可能leader还没commit（没有大多数人收到日志，所以只能不commit，所以commit说可能小于prevLogIndex都。
 	//if req.LeaderCommitId < req.PrevLogIndex {
 	//	log.Errorf("req arg error commit(%d)<prevIndex(%d)", req.LeaderCommitId, req.PrevLogIndex)
@@ -45,15 +43,13 @@ func (r *Raft) processHeartBeatRequest(req *ReqHeartbeat, resp *RspHeartbeat) {
 	//}
 	//1.如果term < currentTerm返回 false （5.2 节）
 	if req.Term < curTerm {
-		log.Warnf("%s req.Term(%d) < curTerm(%d)", r.tag, req.Term, curTerm)
+		log.Warnf("%s req.Term(%d)idx(%d)from(%d) < curTerm(%d)", r.tag, req.Term, req.PrevLogIndex, from, curTerm)
 		return
 	}
 	// 如果接收到的 RPC 请求或响应中，任期号T > currentTerm，那么就令 currentTerm 等于 T，并切换状态为跟随者（5.1 节）
 	if req.Term > curTerm {
-		//if r.State != StateFollower {
 		//TODO ： 不管是否是follower，都需要更新term，所以索性都走这里。
 		r.becomeFollower(req.Term, req.LeaderId)
-		//}
 	}
 	//req.Term == curTerm
 	if r.State == StateCandidate {
@@ -62,8 +58,9 @@ func (r *Raft) processHeartBeatRequest(req *ReqHeartbeat, resp *RspHeartbeat) {
 	}
 	if r.State == StateLeader {
 		//同一term不可能有两个leader.
-		//可能存在脑裂都情况，或者是transfer都情况,所以，这里将 Fatalf 改为 Warnf
-		log.Warnf("logic error:state is leader")
+		//可能存在脑裂都情况，或者是transfer都情况,所以，这里将 Fatalf 改为 Warnf.drop this msg;
+		log.Fatalf("%s logic error:state is leader.from=%d", r.tag, from)
+		return
 	}
 	r.Lead = req.LeaderId
 	//2.如果日志在 prevLogIndex 位置处的日志条目的任期号和 prevLogTerm 不匹配，则返回 false （5.3 节）
@@ -146,8 +143,7 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 	}
 	var resp RspHeartbeat
 	debugf("handleHeartbeat '%d->%d'(%v):%v", m.GetFrom(), m.GetTo(), m.GetMsgType(), req)
-	//
-	r.processHeartBeatRequest(&req, &resp)
+	r.processHeartBeatRequest(&req, &resp, m.GetFrom())
 	if false == resp.Success {
 		r.send(m.GetFrom(), &resp)
 		return
@@ -164,13 +160,19 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 
 // handleHeartbeat handle Heartbeat RPC request
 func (r *Raft) onHeartbeat(m pb.Message) {
+	if false == r.isLeader() {
+		//可能落后的消息,直接drop.
+		return
+	}
 	// Your Code Here (2A).
 	var resp RspHeartbeat
 	resp.fromPbMsg(m)
 	debugf("onHeartbeat '%d->%d':%+v", m.GetFrom(), m.GetTo(), resp)
 	//失败处理.
 	if false == resp.Success {
-		r.onHeartbeatsFailed(m.GetFrom(), &resp, r.sendHeartbeat)
+		r.onHeartbeatsFailed(m.GetFrom(), &resp, func(to uint64) {
+			r.sendHeartbeat(to)
+		})
 		return
 	}
 	//成功处理.
@@ -240,7 +242,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	req.Entries = m.GetEntries()
 
 	var resp RspAppend
-	r.processHeartBeatRequest(&req.ReqHeartbeat, &resp.RspHeartbeat)
+	r.processHeartBeatRequest(&req.ReqHeartbeat, &resp.RspHeartbeat, m.GetFrom())
 	if false == resp.Success {
 		r.send(m.GetFrom(), &resp)
 		return
@@ -272,13 +274,19 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) onAppendEntries(m pb.Message) {
+	if false == r.isLeader() {
+		//可能落后的消息,直接drop.
+		return
+	}
 	// Your Code Here (2A).
 	var resp RspAppend
 	resp.fromPbMsg(m)
 	debugf("onAppendEntries '%d->%d'(%v):%+v", m.GetFrom(), m.GetTo(), m.GetMsgType(), resp)
 	//失败处理。
 	if false == resp.Success {
-		r.onHeartbeatsFailed(m.GetFrom(), &resp.RspHeartbeat, func(to uint64) { r.sendAppend(to) })
+		r.onHeartbeatsFailed(m.GetFrom(), &resp.RspHeartbeat, func(to uint64) {
+			r.sendAppend(to)
+		})
 		return
 	}
 	//成功处理.
@@ -360,17 +368,11 @@ func (r *Raft) makeHeartbeat(pr *Progress, hb *ReqHeartbeat) error {
 	hb.Term = r.Term
 	hb.LeaderId = r.id
 	hb.LeaderCommitId = r.RaftLog.committed
-	//if pr.Match > 0 {
 	hb.PrevLogIndex = pr.Match
 	t, err := r.RaftLog.Term(pr.Match)
 	if err != nil {
-
 		return err
 	}
 	hb.PrevLogTerm = t
-	//} else {
-	//	//如果没有日志，那么就默认值（1）.
-	//	hb.PrevLogTerm = 0
-	//}
 	return nil
 }

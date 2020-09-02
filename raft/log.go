@@ -75,7 +75,7 @@ func newLog(storage Storage) *RaftLog {
 	rl.committed = first - 1
 	rl.applied = first - 1
 	rl.stabled = last
-	log.Warnf("first(%d)last(%d)", first, last)
+	//log.Warnf("first(%d)last(%d)", first, last)
 	if last >= first { //not empty
 		ents, err := storage.Entries(first, last+1)
 		if err != nil {
@@ -244,8 +244,8 @@ func (l *RaftLog) startAt(start uint64) (ents []pb.Entry, err error) {
 }
 
 func (l *RaftLog) String() string {
-	return fmt.Sprintf(`{"applied":%d,"commited":%d,"stabled":%d,"entries":%s,"pendingSnapshot":%s}`,
-		l.applied, l.committed, l.stabled, entries2Str(1, l.entries), snapshot2Str(l.pendingSnapshot))
+	return fmt.Sprintf(`{"applied":%d,"commited":%d,"stabled":%d,"entries<%d>":%s,"pendingSnapshot":%s}`,
+		l.applied, l.committed, l.stabled, len(l.entries), entries2Str(1, l.entries), snapshot2Str(l.pendingSnapshot))
 }
 
 func snapshot2Str(sp *pb.Snapshot) string {
@@ -272,7 +272,7 @@ func entries2Str(n int, entries []pb.Entry) string {
 			if idx < n {
 				builder.WriteByte(',')
 			} else {
-				builder.WriteString(fmt.Sprintf("...<%d>", len(entries)-idx))
+				builder.WriteString("...")
 				break
 			}
 		}

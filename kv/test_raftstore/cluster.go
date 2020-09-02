@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"github.com/pingcap-incubator/tinykv/kv/raftstore/util"
 	"io/ioutil"
 	"math/rand"
 	"os"
@@ -183,6 +184,9 @@ func (c *Cluster) Request(key []byte, reqs []*raft_cmdpb.Request, timeout time.D
 	startTime := time.Now()
 	for i := 0; i < 10 || time.Now().Sub(startTime) < timeout; i++ {
 		region := c.GetRegion(key)
+		if err := util.CheckKeyInRegion(key, region); err != nil {
+			log.Fatalf("%s;%s.", string(key), region2str("region", region))
+		}
 		regionID := region.GetId()
 		req := NewRequest(regionID, region.RegionEpoch, reqs)
 		resp, txn := c.CallCommandOnLeader(&req, timeout)
@@ -195,9 +199,6 @@ func (c *Cluster) Request(key []byte, reqs []*raft_cmdpb.Request, timeout time.D
 			SleepMS(100)
 			continue
 		}
-		//if reqs[0].GetSnap() != nil {
-		//	log.TestLog("snapshot(%d-%s)", region.GetId(), string(key))
-		//}
 		return resp, txn
 	}
 	panic("request timeout")

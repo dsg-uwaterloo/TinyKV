@@ -186,7 +186,7 @@ func doSnapshot(engines *engine_util.Engines, mgr *snap.SnapManager, regionId ui
 	}
 
 	region := regionState.GetRegion()
-	log.TestLog("%s snapshot get region(%x)=%+v", id, meta.RegionStateKey(regionId), region)
+	//log.TestLog("%s snapshot get region(%x)=%+v", id, meta.RegionStateKey(regionId), region)
 	confState := util.ConfStateFromRegion(region)
 	snapshot := &eraftpb.Snapshot{
 		Metadata: &eraftpb.SnapshotMetadata{

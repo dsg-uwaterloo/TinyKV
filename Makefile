@@ -7,7 +7,8 @@ ifeq "$(GOPATH)" ""
   $(error Please set the environment variable GOPATH before running `make`)
 endif
 
-GO                  := GO111MODULE=on go
+ENV=LOG_LEVEL=fatal
+GO                  := $(ENV) GO111MODULE=on go
 GOBUILD             := $(GO) build $(BUILD_FLAG) -tags codes
 GOTEST              := $(GO) test -v --count=1 --parallel=1 -p=1
 
@@ -15,6 +16,7 @@ TEST_LDFLAGS        := ""
 
 PACKAGE_LIST        := go list ./...| grep -vE "cmd"
 PACKAGES            := $$($(PACKAGE_LIST))
+
 
 # Targets
 .PHONY: clean test proto kv scheduler dev
@@ -78,8 +80,9 @@ project3: project3a project3b project3c
 project3a:
 	$(GOTEST) ./raft -run 3A
 
+## testcase总耗时可能会存在超时，所以这里设置下超时为30m(分钟)。
 project3b:
-	$(GOTEST) ./kv/test_raftstore -run 3B
+	$(GOTEST) -timeout 40m ./kv/test_raftstore -run 3B
 
 project3c:
 	$(GOTEST) ./scheduler/server ./scheduler/server/schedulers -check.f="3C"

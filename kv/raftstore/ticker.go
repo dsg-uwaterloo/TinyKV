@@ -111,7 +111,7 @@ func (r *tickDriver) run() {
 		case <-timer:
 			for regionID := range r.regions {
 				if r.router.send(regionID, message.NewPeerMsg(message.MsgTypeTick, regionID, nil)) != nil {
-					log.TestLog("tickDriver remove region %d", regionID)
+					log.Warnf("tickDriver remove region %d", regionID)
 					delete(r.regions, regionID)
 				}
 			}

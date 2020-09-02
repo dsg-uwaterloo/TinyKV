@@ -38,16 +38,25 @@ func (r *Raft) elect() {
 	r.broadcast(&req)
 }
 
-func (r *Raft) doVote(to, curTerm uint64, voteGrant bool) {
+func (r *Raft) doVote(to, curTerm, reqTerm uint64, voteGrant bool) {
 	var rsp = &RspVote{
 		Term:        curTerm,
 		VoteGranted: voteGrant,
+		ReqTerm:     reqTerm,
 	}
 	if voteGrant {
+		log.Debugf("%s vote %d-> %d for term(%d->%d)", r.tag, r.Vote, to, curTerm, r.Term)
 		r.Vote = to
+	} else {
+		//log.TestLog("%s reject %d(%d<>%d)", r.tag, to, curTerm, reqTerm)
 	}
 	r.send(to, rsp)
 }
+
+//logs/1280:2020/09/02 18:09:13.609718 raft.go:338: [<test>error] raft-1280 become to leader(18)last(20);prs=Prs(5){1280:{20,21},1281:{20,21},1282:{20,21},1283:{20,21},1279:{20,21},};
+//		votes=map[1280:true 1282:true 1283:true];raftLog{"applied":19,"commited":19,"stabled":20,"entries":[{"EntryNormal,6,6,dlen(0)},{"EntryNormal,6,7,dlen(60)}...<14>],"pendingSnapshot":nil};
+//logs/1281:2020/09/02 18:09:13.944361 raft.go:338: [<test>error] raft-1281 become to leader(18)last(20);prs=Prs(5){1279:{20,21},1280:{20,21},1281:{20,21},1282:{20,21},1283:{20,21},};
+//		votes=map[1279:true 1281:true 1283:true];raftLog{"applied":19,"commited":19,"stabled":20,"entries":[{"EntryNormal,6,6,dlen(0)},{"EntryNormal,6,7,dlen(60)}...<14>],"pendingSnapshot":nil};
 
 func (r *Raft) onVote(m pb.Message) {
 	curTerm := r.Term
@@ -55,7 +64,6 @@ func (r *Raft) onVote(m pb.Message) {
 	rsp.fromPbMsg(m)
 
 	debugf("onVote '%d->%d'(%v):%v", m.GetFrom(), m.GetTo(), m.GetMsgType(), rsp)
-	//
 	//如果接收到的 RPC 请求或响应中，任期号T > currentTerm，那么就令 currentTerm 等于 T，并切换状态为跟随者（5.1 节）
 	if rsp.Term > curTerm {
 		r.becomeFollower(rsp.Term, 0)
@@ -63,7 +71,14 @@ func (r *Raft) onVote(m pb.Message) {
 	}
 	if r.State != StateCandidate {
 		//如果已经不是Candidate了，不在乎选票了.
-		debugf("'%d' was leader now.", r.id)
+		debugf("'%d' was not candidate now.", r.id)
+		return
+	}
+	//log.Infof("%s onVote '%d->%d'(%v):%v", r.tag, m.GetFrom(), m.GetTo(), m.GetMsgType(), rsp)
+	//NOTICE-raft:如果不是本次Term，那么直接就drop，防止之前的vote消息有干扰.
+	// 		这个是因为系统处理太慢导致的.
+	if rsp.ReqTerm != r.Term {
+		log.Warnf("%s Term(%d) resp.reqTerm(%d) err:message is too slow", r.tag, r.Term, rsp.ReqTerm)
 		return
 	}
 	if false == rsp.VoteGranted {
@@ -95,24 +110,30 @@ func (r *Raft) handleVote(m pb.Message) {
 	var req ReqVote
 	req.fromPbMsg(m)
 
-	debugf("handleVote '%d->%d'(%v):%+v", m.GetFrom(), m.GetTo(), m.GetMsgType(), req)
+	log.Debugf("%s handleVote '%d->%d'(%v):%+v", r.tag, m.GetFrom(), m.GetTo(), m.GetMsgType(), req)
 
 	//1.如果term < currentTerm返回 false （5.2 节）
 	if req.Term < curTerm {
 		log.Warnf("req.Term(%d) < curTerm(%d)", req.Term, curTerm)
-		r.doVote(m.GetFrom(), curTerm, false)
+		r.doVote(m.GetFrom(), curTerm, req.Term, false)
 		return
 	}
 	// 如果接收到的 RPC 请求或响应中，任期号T > currentTerm，那么就令 currentTerm 等于 T，并切换状态为跟随者（5.1 节）
 	if req.Term > curTerm {
 		r.becomeFollower(req.Term, 0)
 		//这里仅仅是自己变为follower，因为有比自己大的term了;但是，还是需要比较log，如果日志不满足，那么会拒绝.
-		//r.doVote(m.GetFrom(), curTerm, true)
-		//return
+		if false == r.RaftLog.reqHasNewLog(&req) {
+			debugf("log was not new")
+			r.doVote(m.GetFrom(), curTerm, req.Term, false)
+			return
+		}
+		r.doVote(m.GetFrom(), curTerm, req.Term, true)
+		return
 	}
+	//下面处理term相等都情况.
 	if false == r.RaftLog.reqHasNewLog(&req) {
 		debugf("log was not new")
-		r.doVote(m.GetFrom(), curTerm, false)
+		r.doVote(m.GetFrom(), curTerm, req.Term, false)
 		return
 	}
 	//3.如果 votedFor 为空或者为 candidateId，并且候选人的日志至少和自己一样新，那么就投票给他（5.2 节，5.4 节）
@@ -120,10 +141,10 @@ func (r *Raft) handleVote(m pb.Message) {
 	if r.Vote != 0 && r.Vote != req.CandidateId {
 		//已经投票给其它人了。
 		debugf("vote others %d", r.Vote)
-		r.doVote(req.CandidateId, curTerm, false)
+		r.doVote(req.CandidateId, curTerm, req.Term, false)
 		return
 	}
-	r.doVote(req.CandidateId, curTerm, true)
+	r.doVote(req.CandidateId, curTerm, req.Term, true)
 }
 
 func (rl *RaftLog) reqHasNewLog(req *ReqVote) (isNew bool) {
@@ -136,7 +157,6 @@ func (rl *RaftLog) reqHasNewLog(req *ReqVote) (isNew bool) {
 	}
 	//check new logs;
 	lastTerm, err := rl.Term(lastIndex)
-	debugf("last(%d:%d)", lastIndex, lastTerm)
 	if err != nil {
 		log.Errorf("last log term(%d) err:%s", lastIndex, err.Error())
 		return false

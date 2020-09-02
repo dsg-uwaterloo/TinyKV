@@ -201,13 +201,13 @@ func (d *storeWorker) maybeCreatePeer(regionID uint64, msg *rspb.RaftMessage) (b
 		log.Debugf("target peer %d doesn't exist(%s)", regionID, msg.ToPeer)
 		return false, nil
 	}
-	log.TestLog("maybeCreatePeer(%d-%d)(%d->%d)%v", regionID, d.ctx.store.GetId(), msg.GetFromPeer().GetId(), msg.GetToPeer().GetId(), msg.GetMessage().GetMsgType())
+	log.Debugf("maybeCreatePeer(%d-%d)(%d->%d)%v", regionID, d.ctx.store.GetId(), msg.GetFromPeer().GetId(), msg.GetToPeer().GetId(), msg.GetMessage().GetMsgType())
 
 	for _, region := range meta.getOverlapRegions(&metapb.Region{
 		StartKey: msg.StartKey,
 		EndKey:   msg.EndKey,
 	}) {
-		log.TestLog("msg start(%x)end(%x) is overlapped with exist region-%d start(%x)end(%x)", msg.GetStartKey(), msg.GetEndKey(), region.GetId(), region.GetStartKey(), region.GetEndKey())
+		log.Debugf("msg start(%x)end(%x) is overlapped with exist region-%d start(%x)end(%x)", msg.GetStartKey(), msg.GetEndKey(), region.GetId(), region.GetStartKey(), region.GetEndKey())
 		if util.IsFirstVoteMessage(msg.Message) {
 			meta.pendingVotes = append(meta.pendingVotes, msg)
 		}

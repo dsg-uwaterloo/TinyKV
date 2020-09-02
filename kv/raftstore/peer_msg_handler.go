@@ -269,7 +269,7 @@ func (d *peerMsgHandler) checkSnapshot(msg *rspb.RaftMessage) (*snap.SnapKey, er
 	if msg.Message.Snapshot == nil {
 		return nil, nil
 	}
-	log.TestLog("%s checkSnapshot (%d->%d)regionId=%d",
+	log.Infof("%s checkSnapshot (%d->%d)regionId=%d",
 		d.Tag, msg.GetFromPeer().GetId(), msg.GetToPeer().GetId(), msg.RegionId)
 	regionID := msg.RegionId
 	snapshot := msg.Message.Snapshot

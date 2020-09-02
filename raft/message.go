@@ -34,6 +34,7 @@ func (rv *ReqVote) fromPbMsg(m pb.Message) {
 type RspVote struct {
 	Term        uint64 `json:"term"`        //当前任期号，以便于候选人去更新自己的任期号
 	VoteGranted bool   `json:"voteGranted"` //候选人赢得了此张选票时为真
+	ReqTerm     uint64 `json:"req_term"`    //NOTICE-raft:请求消息对应都term,leader处理响应消息都时候，会判断下是否是最新都term请求都voteReq；否则直接丢弃.
 }
 
 func (rv *RspVote) toPbMsg() pb.Message {
@@ -41,12 +42,14 @@ func (rv *RspVote) toPbMsg() pb.Message {
 		MsgType: pb.MessageType_MsgRequestVoteResponse,
 		Term:    rv.Term,
 		Reject:  !rv.VoteGranted,
+		LogTerm: rv.ReqTerm,
 	}
 }
 
 func (rv *RspVote) fromPbMsg(m pb.Message) {
 	rv.Term = m.GetTerm()
-	rv.VoteGranted = !m.Reject
+	rv.VoteGranted = !m.GetReject()
+	rv.ReqTerm = m.GetLogTerm()
 }
 
 type ReqHeartbeat struct {
@@ -77,18 +80,32 @@ func (rh *ReqHeartbeat) fromPbMsg(m pb.Message) {
 type RspHeartbeat struct {
 	Term    uint64 `json:"term"`
 	Success bool   `json:"succ"`
+	//NOTICE-raft:如果失败（RspHeartbeat.Sucess==false），那么就填充req相关数据；如果成功，则忽略该值;
+	reqPrevLogIndex uint64 `json:"req_prev_log_index"`
+	reqPrevLogTerm  uint64 `json:"req_prev_log_term"`
 }
 
 func (rv *RspHeartbeat) toPbMsg() pb.Message {
-	return pb.Message{
+	m := pb.Message{
 		MsgType: pb.MessageType_MsgHeartbeatResponse,
 		Term:    rv.Term,
 		Reject:  !rv.Success,
 	}
+	if false == rv.Success {
+		m.Index = rv.reqPrevLogIndex
+		m.LogTerm = rv.reqPrevLogTerm
+	}
+	return m
 }
+
 func (rv *RspHeartbeat) fromPbMsg(m pb.Message) {
 	rv.Term = m.GetTerm()
 	rv.Success = !m.GetReject()
+	//
+	if false == rv.Success {
+		rv.reqPrevLogIndex = m.GetIndex()
+		rv.reqPrevLogTerm = m.GetLogTerm()
+	}
 }
 
 type ReqAppend struct {
@@ -132,12 +149,23 @@ type RspAppend struct {
 func (ra *RspAppend) toPbMsg() pb.Message {
 	m := ra.RspHeartbeat.toPbMsg()
 	m.MsgType = pb.MessageType_MsgAppendResponse
-	m.Index = ra.LastLogIndex
+	//NOTICE-raft:如果失败（RspHeartbeat.Sucess==false），那么就填充req相关数据；如果成功，则忽略该值;
+	if ra.Success {
+		m.Index = ra.LastLogIndex
+	} else {
+		//NOTICE-raft:可能会存在情况：系统网络速度比较慢（比心跳都慢），所以这里就导致相同都消息多次发送，导致多次返回失败；
+		//	多次返回失败，导致leader的Progress多次减少，导致snapshot.
+		//  由于心跳也有这个问题，所以这个赋值放到心跳消息中做.
+		//m.Index = ra.reqPrevLogIndex
+		//m.LogTerm = ra.reqPrevLogTerm
+	}
 	return m
 }
 func (ra *RspAppend) fromPbMsg(m pb.Message) {
 	ra.RspHeartbeat.fromPbMsg(m)
-	ra.LastLogIndex = m.GetIndex()
+	if ra.Success {
+		ra.LastLogIndex = m.GetIndex()
+	}
 }
 
 //term	领导人的任期号

@@ -451,7 +451,7 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 			ps.raftState.LastIndex = last.Index
 			ps.raftState.LastTerm = last.Term
 		} else {
-			log.Errorf(`%s last(%d) raftState(%d)`, ps.Tag, last.GetIndex(), ps.raftState.GetLastIndex())
+			log.Warnf(`%s last(%d) raftState(%d)`, ps.Tag, last.GetIndex(), ps.raftState.GetLastIndex())
 		}
 	}
 	elen = len(ready.CommittedEntries)
