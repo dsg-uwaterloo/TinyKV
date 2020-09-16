@@ -88,7 +88,7 @@ func (r *SchedulerTaskHandler) onRegionHeartbeatResponse(resp *schedulerpb.Regio
 func (r *SchedulerTaskHandler) onAskSplit(t *SchedulerAskSplitTask) {
 	resp, err := r.SchedulerClient.AskSplit(context.TODO(), t.Region)
 	if err != nil {
-		log.Error(err)
+		//log.Error(err)
 		return
 	}
 

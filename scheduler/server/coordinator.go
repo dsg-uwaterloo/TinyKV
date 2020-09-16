@@ -92,7 +92,7 @@ func (c *coordinator) patrolRegions() {
 			log.Info("patrol regions has been stopped")
 			return
 		}
-
+		//NOTICE-3C:scan the all regions from btree;
 		regions := c.cluster.ScanRegions(key, nil, patrolScanRegionLimit)
 		if len(regions) == 0 {
 			// Resets the scan key.

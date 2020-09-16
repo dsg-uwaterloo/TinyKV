@@ -14,8 +14,11 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"github.com/pingcap-incubator/tinykv/kv/raftstore/util"
+	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
 	"path"
 	"sync"
 	"time"
@@ -159,7 +162,10 @@ func (c *RaftCluster) start() error {
 	c.quit = make(chan struct{})
 
 	c.wg.Add(2)
+	//NOTICE-3C:create scheduler-->region process(add/remove node and so on).
+	//			one scheduler one goroutine.
 	go c.runCoordinator()
+	//NOTICE-3C:check stores status,for send/receive msg;
 	go c.runBackgroundJobs(backgroundJobInterval)
 	c.running = true
 
@@ -279,7 +285,284 @@ func (c *RaftCluster) handleStoreHeartbeat(stats *schedulerpb.StoreStats) error 
 // processRegionHeartbeat updates the region information.
 func (c *RaftCluster) processRegionHeartbeat(region *core.RegionInfo) error {
 	// Your Code Here (3C).
+	//copy from kv/test_raftstore/scheduler.go
+	log.Debug("processRegionHeartbeat", zap.String("region", RegionBase2Str(region.GetMeta())))
+	if err := c.handleHeartbeatVersion(region); err != nil {
+		log.Error("processRegionHeartbeat", zap.String("handleHeartbeatVersion", err.Error()))
+		return err
+	}
+	if err := c.handleHeartbeatConfVersion(region); err != nil {
+		log.Error("processRegionHeartbeat", zap.String("handleHeartbeatConfVersion", err.Error()))
+		return err
+	}
+	c.handleRegion(region)
+	return nil
+}
 
+func (c *RaftCluster) handleRegion(regionInfo *core.RegionInfo) error {
+	searchRegion := c.core.SearchRegion(regionInfo.GetStartKey())
+	if searchRegion == nil {
+		err := c.putRegion(regionInfo)
+		if err != nil {
+			return err
+		}
+		leader := regionInfo.GetLeader()
+		c.core.Stores.SetLeaderCount(leader.GetStoreId(), c.core.GetStoreLeaderCount(leader.GetStoreId()))
+		log.Info("handleRegion",
+			zap.Uint64("region", regionInfo.GetID()),
+			zap.Uint64("leader", leader.GetId()),
+			zap.Int("leaderCount", c.core.GetStoreLeaderCount(leader.GetStoreId())))
+		return err
+	}
+	fromPeers := slice2map(regionInfo.GetPeers())
+	fromPending := slice2map(regionInfo.GetPendingPeers())
+	//
+	var opts []core.RegionCreateOption
+	//1、pending处理：
+	//	1.1、old的pending已经这from的peer中了，那么说明已经添加成功，那么就可以remove了.
+	//	1.2、将from的pending加入进去.
+	var pending []*metapb.Peer
+	for _, p := range searchRegion.GetPendingPeers() {
+		_, ok := fromPeers[p.GetId()]
+		if !ok {
+			pending = append(pending, p)
+			//如果已经在pending中了，那么就不需要重复添加了，直接过滤掉。
+			_, ok = fromPending[p.GetId()]
+			if ok {
+				delete(fromPending, p.GetId())
+			}
+		}
+	}
+	for _, p := range fromPending {
+		pending = append(pending, p)
+	}
+	if len(pending) > 0 {
+		opts = append(opts, core.WithPendingPeers(pending))
+		log.Debug("handleRegion", zap.String("PendingPeers", fmt.Sprintf("%+v", pending)))
+	}
+	//2、peer处理:直接以新的peer为准.
+	if len(regionInfo.GetPeers()) == 0 {
+		log.Error("handleRegion", zap.String("peers", fmt.Sprintf("no peers.")))
+		return nil
+	}
+	opts = append(opts, core.SetPeers(regionInfo.GetPeers()))
+	//3、set leader;
+	if regionInfo.GetLeader().GetId() != searchRegion.GetLeader().GetId() {
+		leader := regionInfo.GetLeader()
+		opts = append(opts, core.WithLeader(leader))
+		log.Info("handleRegion", zap.Uint64("oldLeader", searchRegion.GetLeader().GetId()),
+			zap.Uint64("Leader", leader.GetId()))
+		c.core.Stores.SetLeaderCount(leader.GetStoreId(), c.core.GetStoreLeaderCount(leader.GetStoreId()))
+	}
+	//4、set Approximate
+	if regionInfo.GetApproximateSize() != searchRegion.GetApproximateSize() {
+		if regionInfo.GetApproximateSize() < searchRegion.GetApproximateSize() {
+			log.Fatal(fmt.Sprintf("handleRegion region-%d ApproximateSize(%d);searchRegion-%d ApproximateSize(%d)",
+				regionInfo.GetID(), regionInfo.GetApproximateSize(), searchRegion.GetID(), searchRegion.GetApproximateSize()))
+		}
+		opts = append(opts, core.SetApproximateSize(regionInfo.GetApproximateSize()))
+		log.Debug("handleRegion", zap.Int64("ApproximateSize", regionInfo.GetApproximateSize()))
+	}
+	c.core.PutRegion(searchRegion.Clone(opts...))
+	leader := regionInfo.GetLeader()
+
+	log.Info("handleRegion", zap.Uint64("region", regionInfo.GetID()),
+		zap.Uint64("leader", leader.GetId()), zap.Uint64("oldLeader", searchRegion.GetLeader().GetId()),
+		zap.Int("leaderCount", c.core.GetStoreLeaderCount(leader.GetStoreId())),
+		zap.String("Options", fmt.Sprintf("%+v", opts)))
+	log.Info("handleRegion", zap.String("region", Region2Str(regionInfo.GetMeta())),
+		zap.String("region", Region2Str(regionInfo.GetMeta())))
+	return nil
+}
+
+//region split;
+func (c *RaftCluster) handleHeartbeatVersion(regionInfo *core.RegionInfo) error {
+	region := regionInfo.GetMeta()
+	if engine_util.ExceedEndKey(region.GetStartKey(), region.GetEndKey()) {
+		panic(fmt.Sprintf("%d start key(%s) > end key(%s)", region.GetId(),
+			string(region.GetStartKey()), string(region.GetEndKey())))
+	}
+
+	for {
+		searchRegion := c.core.SearchRegion(region.GetStartKey())
+		if searchRegion == nil {
+			c.putRegion(regionInfo)
+			log.Debug("handleHeartbeatVersion ", zap.Uint64("putRegion", region.GetId()))
+			//新增region，需要初始化设置下 .
+			leader := regionInfo.GetLeader()
+			c.core.Stores.SetLeaderCount(leader.GetStoreId(), c.core.GetStoreLeaderCount(leader.GetStoreId()))
+			c.setRegionCount(regionInfo.GetPeers())
+			return nil
+		} else {
+			if bytes.Equal(searchRegion.GetStartKey(), region.GetStartKey()) &&
+				bytes.Equal(searchRegion.GetEndKey(), region.GetEndKey()) {
+				// the two regions' range are same, must check epoch
+				if util.IsEpochStale(region.RegionEpoch, searchRegion.GetMeta().GetRegionEpoch()) {
+					return errors.New(fmt.Sprintf("epoch is stale1;in=%s;search=%s.", region.GetRegionEpoch(), searchRegion.GetRegionEpoch()))
+				}
+				if searchRegion.GetMeta().GetRegionEpoch().GetVersion() < region.RegionEpoch.Version {
+					c.core.RemoveRegion(searchRegion)
+					c.putRegion(regionInfo)
+					log.Debug("handleHeartbeatVersion ", zap.Uint64("RemoveRegion", searchRegion.GetID()), zap.Uint64("putRegion", region.GetId()))
+				} else {
+					log.Debug("handleHeartbeatVersion", zap.Uint64("run here 4", region.GetId()))
+				}
+				return nil
+			}
+			//log.TestLog("handleHeartbeatVersion-1 : %s,%+v;%s,%+v",
+			//	rkeys2str("search", searchRegion), searchRegion.GetRegionEpoch(),
+			//	rkeys2str("region", region), region.GetRegionEpoch())
+			if engine_util.ExceedEndKey(searchRegion.GetStartKey(), region.GetEndKey()) {
+				// No range covers [start, end) now, insert directly.
+				c.putRegion(regionInfo)
+				log.Debug("handleHeartbeatVersion ", zap.Uint64("putRegion", region.GetId()))
+				return nil
+			} else {
+				// overlap, remove old, insert new.
+				// E.g, 1 [a, c) -> 1 [a, b) + 2 [b, c), either new 1 or 2 reports, the region
+				// is overlapped with origin [a, c).
+				if region.GetRegionEpoch().GetVersion() <= searchRegion.GetRegionEpoch().GetVersion() {
+					return errors.New(fmt.Sprintf("epoch is stale2;in=%s;search=%s.", region.GetRegionEpoch(), searchRegion.GetRegionEpoch()))
+				}
+				c.core.RemoveRegion(searchRegion)
+				log.Debug("handleHeartbeatVersion ", zap.Uint64("RemoveRegion", searchRegion.GetID()))
+			}
+		}
+	}
+	return nil
+}
+
+//confChange:add/remove.
+func (c *RaftCluster) handleHeartbeatConfVersion(regionInfo *core.RegionInfo) error {
+	region := regionInfo.GetMeta()
+	searchRegion, _ := c.GetRegionByKey(region.GetStartKey())
+	if searchRegion == nil {
+		return nil
+	}
+	if util.IsEpochStale(region.GetRegionEpoch(), searchRegion.GetRegionEpoch()) {
+		return errors.New("epoch is stale")
+	}
+
+	regionPeerLen := len(region.GetPeers())
+	searchRegionPeerLen := len(searchRegion.GetPeers())
+
+	if region.RegionEpoch.ConfVer > searchRegion.RegionEpoch.ConfVer {
+		// If ConfVer changed, TinyKV has added/removed one peer already.
+		// So scheduler and TinyKV can't have same peer count and can only have
+		// only one different peer.
+		log.Debug(fmt.Sprintf("epoch is stale1;in=%s;search=%s.", region.GetRegionEpoch(), searchRegion.GetRegionEpoch()))
+		//peer changed,ConfVer must be changed.
+		var changePeers []*metapb.Peer
+		if searchRegionPeerLen > regionPeerLen {
+			//remove nodes;
+			if searchRegionPeerLen-regionPeerLen != 1 {
+				panic("should only one conf change")
+			}
+			diff := GetDiffPeers(searchRegion, region)
+			if len(diff) != 1 {
+				panic("should only one different peer")
+			} else {
+				changePeers = append(changePeers, diff[0])
+			}
+			if len(GetDiffPeers(region, searchRegion)) != 0 {
+				panic("should include all peers")
+			}
+		} else if searchRegionPeerLen < regionPeerLen {
+			//add nodes;
+			if regionPeerLen-searchRegionPeerLen != 1 {
+				panic("should only one conf change")
+			}
+			diff := GetDiffPeers(region, searchRegion)
+			if len(diff) != 1 {
+				panic("should only one different peer")
+			} else {
+				changePeers = append(changePeers, diff[0])
+			}
+			if len(GetDiffPeers(searchRegion, region)) != 0 {
+				panic("should include all peers")
+			}
+		} else {
+			MustSamePeers(searchRegion, region)
+			if searchRegion.RegionEpoch.ConfVer+1 != region.RegionEpoch.ConfVer {
+				panic(fmt.Sprintf("unmatched conf version:in=%s;search=%s.", region.GetRegionEpoch(), searchRegion.GetRegionEpoch()))
+			}
+			//TODO: why???
+			//if searchRegion.RegionEpoch.Version+1 != region.RegionEpoch.Version {
+			//	panic(fmt.Sprintf("unmatched version:in=%s;search=%s.", region.GetRegionEpoch(), searchRegion.GetRegionEpoch()))
+			//}
+		}
+
+		// update the region.
+		err := c.putRegion(regionInfo)
+		if err != nil {
+			panic(fmt.Sprintf("update inexistent region(%d) err:%s ", region.GetId(), err.Error()))
+		}
+		log.Debug("handleHeartbeatConfVersion update ok", zap.Uint64("region", region.GetId()))
+		//理论上来说，最多就一个node变化了.
+		if len(changePeers) > 0 {
+			if len(changePeers) != 1 {
+				panic("should only one change peer")
+			} else {
+				c.setRegionCount(changePeers)
+			}
+		}
+	} else {
+		if !IsSamePeers(searchRegion, region) {
+			log.Warn("handleHeartbeatConfVersion not same peer",
+				zap.String("search", searchRegion.String()),
+				zap.String("region", region.String()))
+		}
+	}
+	return nil
+}
+
+func (c RaftCluster) setRegionCount(changes []*metapb.Peer) {
+	c.Lock()
+	for _, cp := range changes {
+		c.core.Stores.SetRegionCount(cp.GetStoreId(), c.core.Regions.GetStoreRegionCount(cp.GetStoreId()))
+	}
+	c.Unlock()
+}
+
+func IsSamePeers(left *metapb.Region, right *metapb.Region) bool {
+	if len(left.GetPeers()) != len(right.GetPeers()) {
+		return false
+	}
+	for _, p := range left.GetPeers() {
+		if FindPeer(right, p.GetStoreId()) == nil {
+			return false
+		}
+	}
+	return true
+}
+
+func MustSamePeers(left *metapb.Region, right *metapb.Region) {
+	if len(left.GetPeers()) != len(right.GetPeers()) {
+		panic(fmt.Sprintf("unmatched peers length,left(%s)rignt(%s)", left.String(), right))
+	}
+	for _, p := range left.GetPeers() {
+		if FindPeer(right, p.GetStoreId()) == nil {
+			panic(fmt.Sprintf("not found the peer(%s),left(%s)rignt(%s)", p, left.String(), right))
+		}
+	}
+}
+
+func GetDiffPeers(left *metapb.Region, right *metapb.Region) []*metapb.Peer {
+	peers := make([]*metapb.Peer, 0, 1)
+	for _, p := range left.GetPeers() {
+		if FindPeer(right, p.GetStoreId()) == nil {
+			peers = append(peers, p)
+		}
+	}
+	return peers
+}
+
+func FindPeer(region *metapb.Region, storeID uint64) *metapb.Peer {
+	for _, p := range region.GetPeers() {
+		if p.GetStoreId() == storeID {
+			return p
+		}
+	}
 	return nil
 }
 

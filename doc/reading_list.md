@@ -117,3 +117,30 @@
     - <https://principlesofchaos.org/>
     - <https://pingcap.com/blog/chaos-practice-in-tidb/>
     - <https://medium.com/@siddontang/use-chaos-to-test-the-distributed-system-linearizability-4e0e778dfc7d>
+# 机构
+- 1、银联`unionpay`
+- 2、中移动 `cmcc`
+- 3、农业银行 `abc`
+- 4、工商银行 `icbc`
+# 服务(service)
+- 服务有两种：证书加载(getCert)；数据签名(signData)。
+- 服务提供商为 cmcc
+- cmcc发布服务；unionpay审核服务，通过；其它机构可以看到该服务.
+# 合约（UVM)
+```
+contract Cert{
+  //合约模版
+  //合约入参
+  struct Input{
+
+  };
+  //合约出参
+  struct Output{
+
+  };
+  //农业银行
+  Task abc{
+    Input i = initParam();
+  }
+}
+```

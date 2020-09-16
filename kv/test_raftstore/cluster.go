@@ -400,8 +400,7 @@ func (c *Cluster) ScanLeader(start, end []byte) ([][]byte, uint64) {
 		region := resp.Responses[0].GetSnap().Region
 		iter := raft_storage.NewRegionReader(txn, *region).IterCF(engine_util.CfDefault)
 		//
-		//lastValue := ""
-		//cnt := 0
+		var lastKey []byte
 		for iter.Seek(key); iter.Valid(); iter.Next() {
 			if engine_util.ExceedEndKey(iter.Item().Key(), end) {
 				break
@@ -411,12 +410,15 @@ func (c *Cluster) ScanLeader(start, end []byte) ([][]byte, uint64) {
 				panic(err)
 			}
 			values = append(values, value)
-			//lastValue = string(value)
-			//cnt++
+			lastKey = iter.Item().Key()
 		}
 		iter.Close()
-		//log.TestLog("ScanLeader(%d)(%d)=%s", region.Id, cnt, lastValue)
-
+		//for test;
+		checkRegion := c.GetRegion(key)
+		if false == bytes.Equal(region.GetEndKey(), checkRegion.GetEndKey()) {
+			log.Errorf("%s\n%s;\n%s.", lastKey, region2str("region", region), region2str("checkRegion", checkRegion))
+		}
+		//
 		key = region.EndKey
 		if len(key) == 0 {
 			break

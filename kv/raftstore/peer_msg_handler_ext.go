@@ -745,9 +745,9 @@ func (d *peerMsgHandler) onRegionSplit(hdr *raft_cmdpb.RaftRequestHeader, req *r
 		//[start<end)<=splitKey;可能会触发多次split.
 		//log.Warnf("%s onRegionSplit start(%x) end(%x) split(%x)req=%s", d.Tag, region.GetStartKey(), region.GetEndKey(), req.GetSplitKey(), req)
 		return
-	} else {
-		log.Infof("%s onRegionSplit %s ", d.Tag, req)
 	}
+	log.Infof("%s onRegionSplit %s ", d.Tag, req)
+
 	if len(region.GetPeers()) != len(req.GetNewPeerIds()) {
 		log.Errorf("%s len(region.GetPeers())<%d> != len(req.GetNewPeerIds())<%d>", d.Tag, len(region.GetPeers()), len(req.GetNewPeerIds()))
 		return
@@ -776,10 +776,10 @@ func (d *peerMsgHandler) onRegionSplit(hdr *raft_cmdpb.RaftRequestHeader, req *r
 	ctx.storeMeta.regions[region.GetId()] = region
 	d.SetRegion(region)
 	//
-	log.Infof("%s onRegionSplit(%s-%d) ok. {%d:'%s'->'%s'},{%d:'%s'->'%s'} ",
+	log.TestLog("%s onRegionSplit(%s-%d) ok. {%d:'%s'->'%s'},{%d:'%s'->'%s';%+v} ",
 		d.Tag, newPeer.Tag, newPeer.Meta.StoreId,
 		region.GetId(), region.GetStartKey(), region.GetEndKey(),
-		newRegion.GetId(), newRegion.GetStartKey(), newRegion.GetStartKey())
+		newRegion.GetId(), newRegion.GetStartKey(), newRegion.GetEndKey(), req.GetNewPeerIds())
 }
 
 func (d *peerMsgHandler) CreateRegion(region *metapb.Region, req *raft_cmdpb.SplitRequest) *metapb.Region {

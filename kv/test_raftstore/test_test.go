@@ -174,6 +174,33 @@ func checkRegion(cluster *Cluster, storeId int) {
 	}
 }
 
+func checkScan(last string, cli, lastId, loop int, cluster *Cluster, t *testing.T) {
+	failed := false
+	for i := 0; i < loop; i++ {
+		start := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", 0)
+		end := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", lastId)
+		//log.Infof("%d: client new scan '%v'-'%v'\n", cli, start, end)
+		values, leader := cluster.ScanLeader([]byte(start), []byte(end))
+		v := string(bytes.Join(values, []byte("")))
+		if v != last {
+			if !failed {
+				failed = true
+			}
+			SleepMS(1000)
+			if i == loop-1 {
+				t.Fatalf("get wrong value, client (%v->%d,lastSet<%d>）\nwant:%v\ngot: %v\n", cli, leader, lastId, last, v)
+			} else {
+				t.Errorf("%d get wrong value, client (%v->%d,lastSet<%d>）\nwant:%v\ngot: %v\n", i, cli, leader, lastId, last, v)
+			}
+		} else {
+			break
+		}
+	}
+	if failed {
+		log.Fatalf("get wrong value")
+	}
+}
+
 // Basic test is as follows: one or more clients submitting Put/Scan
 // operations to set of servers for some period of time.  After the period is
 // over, test checks that all sequential values are present and in order for a
@@ -246,7 +273,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 				clnts[cli] <- j
 			}()
 			last := ""
-			var lastLeader uint64
+			//var lastLeader uint64
 			lastKey := ""
 			lastvalue := ""
 			for atomic.LoadInt32(&done_clients) == 0 {
@@ -254,22 +281,27 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 					key := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", j)
 					value := "x " + strconv.Itoa(cli) + " " + strconv.Itoa(j) + " y;"
 					//log.Infof("%d: client new put '%v'(%x),'%v'\n", cli, key, key, value)
-					lastLeader = cluster.MustPutLeader([]byte(key), []byte(value))
+					//lastLeader = cluster.MustPutLeader([]byte(key), []byte(value))
+					cluster.MustPut([]byte(key), []byte(value))
 					last = NextValue(last, value)
 					j++
 					lastKey = key
 					lastvalue = value
 				} else {
-					start := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", 0)
-					end := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", j)
-					//log.Infof("%d: client new scan '%v'-'%v'\n", cli, start, end)
-					values, leader := cluster.ScanLeader([]byte(start), []byte(end))
-					v := string(bytes.Join(values, []byte("")))
-					if v != last {
-						log.Fatalf("get wrong value, client (%v->%d,lastSet<%d,%d>）\nwant:%v\ngot: %v\n", cli, leader, lastLeader, j, last, v)
-					}
+					checkScan(last, cli, j, 20, cluster, t)
+					//start := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", 0)
+					//end := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", j)
+					////log.Infof("%d: client new scan '%v'-'%v'\n", cli, start, end)
+					//values, leader := cluster.ScanLeader([]byte(start), []byte(end))
+					//v := string(bytes.Join(values, []byte("")))
+					//if v != last {
+					//	log.Fatalf("get wrong value, client (%v->%d,lastSet<%d,%d>）\nwant:%v\ngot: %v\n", cli, leader, lastLeader, j, last, v)
+					//}
 				}
 			}
+			//check before exit;
+			checkScan(last, cli, j, 20, cluster, t)
+			//log;
 			log.TestLog("%s init data ok(%d,%d) '%s'='%s'.", tag, cli, j, lastKey, lastvalue)
 		})
 
@@ -286,7 +318,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			time.Sleep(100 * time.Millisecond)
 			go confchanger(t, cluster, ch_confchange, &done_confchanger)
 		}
-		time.Sleep(5 * time.Second)
+
 		atomic.StoreInt32(&done_clients, 1)     // tell clients to quit
 		atomic.StoreInt32(&done_partitioner, 1) // tell partitioner to quit
 		atomic.StoreInt32(&done_confchanger, 1) // tell confchanger to quit

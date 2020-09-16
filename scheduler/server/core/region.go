@@ -38,9 +38,11 @@ type RegionInfo struct {
 
 // NewRegionInfo creates RegionInfo with region's meta and leader peer.
 func NewRegionInfo(region *metapb.Region, leader *metapb.Peer, opts ...RegionCreateOption) *RegionInfo {
+	emptySlice := make([]*metapb.Peer, 0)
 	regionInfo := &RegionInfo{
-		meta:   region,
-		leader: leader,
+		meta:         region,
+		leader:       leader,
+		pendingPeers: emptySlice,
 	}
 
 	for _, opt := range opts {
@@ -662,7 +664,11 @@ func (r *RegionsInfo) GetFollowersWithLock(storeID uint64, callback func(Regions
 
 // GetLeader return leader RegionInfo by storeID and regionID(now only used in test)
 func (r *RegionsInfo) GetLeader(storeID uint64, region *RegionInfo) *RegionInfo {
-	return r.leaders[storeID].find(region).region
+	ret := r.leaders[storeID].find(region)
+	if ret != nil {
+		return ret.region
+	}
+	return nil
 }
 
 // GetFollower return follower RegionInfo by storeID and regionID(now only used in test)

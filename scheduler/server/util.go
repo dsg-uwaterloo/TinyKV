@@ -16,6 +16,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"github.com/pingcap-incubator/tinykv/proto/pkg/metapb"
 	"math/rand"
 	"net/http"
 	"time"
@@ -155,4 +156,32 @@ func InitHTTPClient(svr *Server) error {
 		},
 	}
 	return nil
+}
+
+func Region2Str(region *metapb.Region) string {
+	return fmt.Sprintf("{Id:%d start:%s end:%s ConfVer:%d Version:%d peers:%+v}",
+		region.GetId(), region.GetStartKey(), region.GetEndKey(),
+		region.GetRegionEpoch().GetConfVer(), region.GetRegionEpoch().GetVersion(),
+		region.GetPeers())
+}
+
+func RegionBase2Str(region *metapb.Region) string {
+	return fmt.Sprintf("{Id:%d start:'%s' end:'%s' ConfVer:%d Version:%d}",
+		region.GetId(), region.GetStartKey(), region.GetEndKey(), region.GetRegionEpoch().GetConfVer(), region.GetRegionEpoch().GetVersion())
+}
+
+func map2slice(in map[uint64]*metapb.Peer) (to []*metapb.Peer) {
+	to = make([]*metapb.Peer, 0, len(in))
+	for _, p := range in {
+		to = append(to, p)
+	}
+	return to
+}
+
+func slice2map(from []*metapb.Peer) (to map[uint64]*metapb.Peer) {
+	to = make(map[uint64]*metapb.Peer, len(from))
+	for _, p := range from {
+		to[p.GetId()] = p
+	}
+	return to
 }

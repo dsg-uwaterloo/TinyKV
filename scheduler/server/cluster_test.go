@@ -55,7 +55,6 @@ func (s *testClusterInfoSuite) setUpTestCluster(c *C) (*RaftCluster, []*core.Reg
 		c.Assert(cluster.processRegionHeartbeat(region), IsNil)
 		checkRegions(c, cluster.core.Regions, regions[:i+1])
 	}
-
 	return cluster, regions
 }
 
@@ -299,6 +298,7 @@ func (s *testClusterInfoSuite) TestHeartbeatSplit3C(c *C) {
 	checkRegion(c, cluster.GetRegionInfoByKey([]byte("foo")), region1)
 
 	// split 1 to 2: [nil, m) 1: [m, nil), sync 2 first.
+	// region 1 (nil,nil) 覆盖了 2[m,nil)，所以需要更新为  2: [nil, m) 1: [m, nil)
 	region1 = region1.Clone(
 		core.WithStartKey([]byte("m")),
 		core.WithIncVersion(),
