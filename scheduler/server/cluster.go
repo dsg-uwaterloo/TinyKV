@@ -20,6 +20,7 @@ import (
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/util"
 	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
 	"path"
+	"sort"
 	"sync"
 	"time"
 
@@ -284,6 +285,143 @@ func (c *RaftCluster) handleStoreHeartbeat(stats *schedulerpb.StoreStats) error 
 
 // processRegionHeartbeat updates the region information.
 func (c *RaftCluster) processRegionHeartbeat(region *core.RegionInfo) error {
+	// Your Code Here (3C).
+	//copy from kv/test_raftstore/scheduler.go
+	//1-Check whether there is a region with the same Id in local storage.
+	util.RSDebugf("processRegionHeartbeat %s", RegionBase2Str(region.GetMeta()))
+	search := c.GetRegion(region.GetID())
+	if search != nil {
+		util.RSDebugf("processRegionHeartbeat process-1")
+		//If there is and at least one of the heartbeats’ conf_ver and version are less than its, this heartbeat region is stale
+		if checkEpoch(search.GetRegionEpoch(), region.GetRegionEpoch()) {
+			if epochChanged(search.GetRegionEpoch(), region.GetRegionEpoch(), true) {
+				return c.flushRegion(region)
+			}
+			if needUpdateRegion(search, region) {
+				return c.flushRegion(region)
+			}
+		}
+		log.Warn("processRegionHeartbeat",
+			zap.String("checkEpoch", fmt.Sprintf("origin=%+v;new=%+v.", search.GetRegionEpoch(), region.GetRegionEpoch())))
+		//need not update;
+		return ErrRegionIsStale(region.GetMeta(), search.GetMeta())
+	}
+	util.RSDebugf("processRegionHeartbeat process-2")
+	//2.If there isn’t, scan all regions that overlap with it
+	searchList := c.ScanRegions(region.GetStartKey(), region.GetEndKey(), 0)
+	//如果searchList为空，那么就是没找到对应的region，直接add.
+	if len(searchList) == 0 {
+		log.Debug("not found ", zap.Uint64("region", region.GetID()))
+		return c.flushRegion(region)
+	}
+	needUpdate := true
+	for _, s := range searchList {
+		//The heartbeats’ conf_ver and version should be greater or equal than all of them, or the region is stale.
+		//all of them;greater or equal. 所有的region都要存在更新，才更新.
+		//If the new one’s version or conf_ver is greater than the original one, it cannot be skipped
+		if !checkEpoch(s.GetRegionEpoch(), region.GetRegionEpoch()) {
+			needUpdate = false
+			util.RSDebugf("checkEpoch failed")
+			break
+		}
+		if false == epochChanged(s.GetRegionEpoch(), region.GetRegionEpoch(), false) {
+			if false == needUpdateRegion(s, region) {
+				needUpdate = false
+				util.RSDebugf("needUpdateRegion failed")
+				break
+			}
+		}
+	}
+	if needUpdate {
+		c.flushRegion(region)
+		return nil
+	}
+	log.Warn("processRegionHeartbeat",
+		zap.String("ScanRegions", fmt.Sprintf("origin=nil;new=%+v.", region.GetRegionEpoch())))
+	return ErrRegionIsStale(region.GetMeta(), nil)
+}
+
+func checkEpoch(origin, newObj *metapb.RegionEpoch) bool {
+	//new必须不小于 origin;
+	if newObj.GetVersion() < origin.GetVersion() {
+		return false
+	}
+	if newObj.GetConfVer() < origin.GetConfVer() {
+		return false
+	}
+	return true
+}
+
+func epochChanged(origin, newObj *metapb.RegionEpoch, searhById bool) bool {
+	new_ver := newObj.GetVersion()
+	new_conf := newObj.GetConfVer()
+	ori_ver := origin.GetVersion()
+	ori_conf := origin.GetConfVer()
+	if searhById {
+		//less than its
+		return (ori_ver < new_ver) || (ori_conf < new_conf)
+	} else {
+		//less or equal;
+		return (ori_ver <= new_ver) || (ori_conf <= new_conf)
+	}
+}
+
+func needUpdateRegion(orignRegion, newRegion *core.RegionInfo) bool {
+	//If the leader changed, it cannot be skipped
+	if orignRegion.GetLeader().GetId() != newRegion.GetLeader().GetId() {
+		return true
+	}
+	//If the ApproximateSize changed, it cannot be skipped
+	if orignRegion.GetApproximateSize() != newRegion.GetApproximateSize() {
+		return true
+	}
+	//If the new one or original one has pending peer, it cannot be skipped
+	if len(orignRegion.GetPendingPeers()) > 0 {
+		return true
+	}
+	//start/end key changed;
+	if false == bytes.Equal(orignRegion.GetStartKey(), newRegion.GetStartKey()) {
+		return true
+	}
+	if false == bytes.Equal(orignRegion.GetEndKey(), newRegion.GetEndKey()) {
+		return true
+	}
+	//change peers;
+	//TODO:<为啥peer改变了，但是confChange却没有改变？什么场景会发生???>
+	if peersChanged(orignRegion.GetPeers(), newRegion.GetPeers()) {
+		return true
+	}
+	return false
+}
+
+func peersChanged(origin, peers SortPeers) bool {
+	if len(origin) != len(peers) {
+		return true
+	}
+	sort.Sort(origin)
+	sort.Sort(peers)
+	for idx := 0; idx < len(origin); idx++ {
+		if origin[idx].GetId() != peers[idx].GetId() {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *RaftCluster) flushRegion(region *core.RegionInfo) error {
+	util.RSDebugf("flushRegion %d", region.GetID())
+	err := c.putRegion(region)
+	if err != nil {
+		log.Warn("flushRegion", zap.Error(err))
+		return err
+	}
+	for sid, _ := range region.GetStoreIds() {
+		c.updateStoreStatusLocked(sid)
+	}
+	return nil
+}
+
+func (c *RaftCluster) processRegionHeartbeat_2(region *core.RegionInfo) error {
 	// Your Code Here (3C).
 	//copy from kv/test_raftstore/scheduler.go
 	log.Debug("processRegionHeartbeat", zap.String("region", RegionBase2Str(region.GetMeta())))

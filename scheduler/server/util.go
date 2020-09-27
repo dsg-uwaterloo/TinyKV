@@ -185,3 +185,17 @@ func slice2map(from []*metapb.Peer) (to map[uint64]*metapb.Peer) {
 	}
 	return to
 }
+
+type SortPeers []*metapb.Peer
+
+func (sp SortPeers) Len() int {
+	return len(sp)
+}
+
+func (sp SortPeers) Swap(i, j int) {
+	sp[i], sp[j] = sp[j], sp[i]
+}
+
+func (sp SortPeers) Less(i, j int) bool {
+	return sp[i].GetId() < sp[j].GetId()
+}

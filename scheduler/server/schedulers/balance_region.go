@@ -20,6 +20,7 @@ import (
 	"github.com/pingcap-incubator/tinykv/scheduler/server/schedule/operator"
 	"github.com/pingcap-incubator/tinykv/scheduler/server/schedule/opt"
 	"sort"
+	"time"
 )
 
 func init() {
@@ -89,89 +90,137 @@ func (s *balanceRegionScheduler) Schedule(cluster opt.Cluster) *operator.Operato
 	if stores.Len() <= 1 {
 		return nil
 	}
+	//sort by GetRegionSize();
 	sort.Sort(&stores)
-
-	toIdx := 0
-	var toStore *core.StoreInfo
+	for _, s := range stores {
+		log.Infof("stores %d,cnt=%d,sz=%d", s.GetID(), s.GetRegionCount(), s.GetRegionSize())
+	}
+	log.Infof("%s.Schedule<%d;Replica=%d> ", s.GetName(),
+		cluster.GetReplicaScheduleLimit(), cluster.GetRegionScheduleLimit())
 	var fromStore *core.StoreInfo
-	for i := 0; i < stores.Len(); i++ {
-		if i == stores.Len()-1 {
-			//如果到最后一个了，那么就没有必要比较了，没有满足条件到.
-			return nil
+	//find the max region size store.
+	for i := stores.Len() - 1; i > 0; i-- {
+		fromStore = stores[i]
+		if false == s.checkStore(fromStore) {
+			continue
 		}
-		toStore = stores[i]
-		if toStore.DownTime() < cluster.GetMaxStoreDownTime() {
-			toIdx = i
-			break
+		if fromStore.DownTime() < cluster.GetMaxStoreDownTime() {
+			op := s.schedule(cluster, stores, i)
+			if op != nil {
+				return op
+			}
 		}
 	}
+	return nil
+}
+
+func (s *balanceRegionScheduler) schedule(cluster opt.Cluster, stores []*core.StoreInfo, fromIdx int) *operator.Operator {
+	fromStore := stores[fromIdx]
+	log.Infof("%s.Schedule find the fromStore<%d,cnt=%d;sz=%d>(%+v)", s.GetName(),
+		fromStore.GetID(), fromStore.GetRegionCount(), fromStore.GetRegionSize(), fromStore.GetMeta())
 	var region *core.RegionInfo
-	for lastIdx := stores.Len() - 1; lastIdx > toIdx; lastIdx-- {
-		fromStore = stores[lastIdx]
-		if fromStore.GetRegionSize()-toStore.GetRegionSize() < int64(cluster.GetRegionScheduleLimit()) {
-			break
+	var toStore *core.StoreInfo
+	for idx := 0; idx < fromIdx; idx++ {
+		toStore = stores[idx]
+		if false == s.checkStore(toStore) {
+			continue
 		}
+		//if fromStore.GetRegionCount()-toStore.GetRegionCount() < int(cluster.GetRegionScheduleLimit()) {
+		//	//后面的store肯定比当前这个大，所以，当前不满足，后续肯定也满足不了.
+		//	break
+		//}
 		region = s.pickupRegion(fromStore.GetID(), toStore.GetID(), cluster)
 		if region != nil {
-			break
+			if len(region.GetPeers()) < cluster.GetMaxReplicas() {
+				log.Warnf("not enough replicas region %d,peers:%d", region.GetID(), len(region.GetPeers()))
+				region = nil
+				continue
+			}
+			if fromStore.GetRegionSize()-toStore.GetRegionSize() > 2*region.GetApproximateSize() {
+				log.Infof("%s.Schedule from store(%d,sz=%d) find region<%d,sz=%d>(%+v) to store<%d,sz=%d>",
+					s.GetName(), fromStore.GetID(), fromStore.GetRegionSize(),
+					region.GetID(), region.GetApproximateSize(), region.GetMeta(),
+					toStore.GetID(), toStore.GetRegionSize())
+				break
+			} else {
+				//log.Warnf("failed:%d->%d (litter than region %d-%d)", fromStore.GetID(), toStore.GetID(), region.GetID(), region.GetApproximateSize())
+				continue
+			}
 		}
 	}
 	if region == nil {
 		//not found;
+		log.Infof("%s.Schedule find region failed.do not schedule", s.GetName())
 		return nil
 	}
 	peer, err := cluster.AllocPeer(toStore.GetID())
 	if err != nil {
-		log.Errorf("from(%d)AllocPeer(%d) err:%s", fromStore.GetID(), toStore.GetID(), err.Error())
+		log.Errorf("%s.Schedule from(%d)AllocPeer(%d) err:%s", s.GetName(), fromStore.GetID(), toStore.GetID(), err.Error())
 		return nil
 	}
+	log.Infof("%s.Schedule region<%d> schedule (%d)->(%d:%d)", s.GetName(), region.GetID(), fromStore.GetID(), peer.GetStoreId(), peer.GetId())
 	//move to;
 	op, err := operator.CreateMovePeerOperator("", cluster, region, operator.OpBalance, fromStore.GetID(), toStore.GetID(), peer.GetId())
 	if err != nil {
-		log.Errorf("from(%d)CreateMovePeerOperator(%d) err:%s", fromStore.GetID(), toStore.GetID(), err.Error())
+		log.Errorf("%s.Schedule from(%d)CreateMovePeerOperator(%d) err:%s", s.GetName(), fromStore.GetID(), toStore.GetID(), err.Error())
 		return nil
 	}
 	return op
 }
 
-func (s *balanceRegionScheduler) pickupRegion(from, to uint64, cluster opt.Cluster) *core.RegionInfo {
+func (s *balanceRegionScheduler) pickupRegion(storeId, filterId uint64, cluster opt.Cluster) *core.RegionInfo {
+	log.Debugf("pickupRegion storeId(%d) filterId(%d)", storeId, filterId)
 	var result *core.RegionInfo
 	start, end := []byte(""), []byte("")
 	//First it will try to select a pending
-	cluster.GetPendingRegionsWithLock(from, func(container core.RegionsContainer) {
+	cluster.GetPendingRegionsWithLock(storeId, func(container core.RegionsContainer) {
 		result = container.RandomRegion(start, end)
 	})
 	//If there isn’t a pending region, it will try to find a follower region
 	if result != nil {
-		if nil == result.GetStorePeer(to) {
+		log.Debugf("find region<%d,sz=%d,peers:%d> in GetPendingRegionsWithLock", result.GetID(), result.GetApproximateSize(), len(result.GetPeers()))
+		if nil == result.GetStorePeer(filterId) {
 			return result
 		} else {
 			result = nil
 		}
 	}
-	cluster.GetFollowersWithLock(from, func(container core.RegionsContainer) {
+	cluster.GetFollowersWithLock(storeId, func(container core.RegionsContainer) {
 		result = container.RandomRegion(start, end)
 	})
 	//If it still cannot pick out one region, it will try to pick leader regions
 	if result != nil {
-		if nil == result.GetStorePeer(to) {
+		log.Debugf("find region<%d,sz=%d,peers:%d> in GetFollowersWithLock", result.GetID(), result.GetApproximateSize(), len(result.GetPeers()))
+		if nil == result.GetStorePeer(filterId) {
 			return result
 		} else {
 			result = nil
 		}
 	}
-	cluster.GetLeadersWithLock(from, func(container core.RegionsContainer) {
+	cluster.GetLeadersWithLock(storeId, func(container core.RegionsContainer) {
 		result = container.RandomRegion(start, end)
 	})
 	//Finally it will select out the region to move, or the Scheduler will try the next store which has smaller region size until all stores will have been tried
 	if result != nil {
-		if nil == result.GetStorePeer(to) {
+		log.Debugf("find region<%d,sz=%d,peers:%d> in GetLeadersWithLock", result.GetID(), result.GetApproximateSize(), len(result.GetPeers()))
+		if nil == result.GetStorePeer(filterId) {
 			return result
 		} else {
 			result = nil
 		}
 	}
 	return result
+}
+
+func (s *balanceRegionScheduler) checkStore(store *core.StoreInfo) bool {
+	if !store.IsUp() {
+		return false
+	}
+	diff := time.Now().Sub(store.GetLastHeartbeatTS())
+	if diff.Nanoseconds() > s.GetMinInterval().Nanoseconds() {
+		return false
+	}
+	return true
 }
 
 type SortStores []*core.StoreInfo
