@@ -58,6 +58,7 @@ func assertDeleteInTxn(t *testing.T, txn *MvccTxn, key []byte, cf string) {
 	assert.Equal(t, expected, del)
 }
 
+//lock to store locks
 func TestPutLock4A(t *testing.T) {
 	txn := testTxn(42, nil)
 	lock := Lock{
@@ -71,6 +72,7 @@ func TestPutLock4A(t *testing.T) {
 	assertPutInTxn(t, txn, []byte{1}, lock.ToBytes(), engine_util.CfLock)
 }
 
+//write to record changes.
 func TestPutWrite4A(t *testing.T) {
 	txn := testTxn(0, nil)
 	write := Write{
@@ -82,6 +84,7 @@ func TestPutWrite4A(t *testing.T) {
 	assertPutInTxn(t, txn, EncodeKey([]byte{16, 240}, 0), write.ToBytes(), engine_util.CfWrite)
 }
 
+//default to hold user values
 func TestPutValue4A(t *testing.T) {
 	txn := testTxn(453325345, nil)
 	value := []byte{1, 1, 2, 3, 5, 8, 13}
