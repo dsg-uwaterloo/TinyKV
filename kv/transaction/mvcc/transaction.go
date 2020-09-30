@@ -48,6 +48,7 @@ func (txn *MvccTxn) PutWrite(key []byte, ts uint64, write *Write) {
 		Value: write.ToBytes(),
 		Cf:    engine_util.CfWrite,
 	}
+	log.TxnDbg("PutWrite key=%x,value=%x", key, put.Value)
 	txn.writes = append(txn.writes, storage.Modify{put})
 }
 
@@ -73,6 +74,7 @@ func (txn *MvccTxn) PutLock(key []byte, lock *Lock) {
 		Value: lock.ToBytes(),
 		Cf:    engine_util.CfLock,
 	}
+	log.TxnDbg("PutLock key=%x,value=%x", key, put.Value)
 	txn.writes = append(txn.writes, storage.Modify{put})
 }
 
@@ -83,6 +85,7 @@ func (txn *MvccTxn) DeleteLock(key []byte) {
 		Key: key,
 		Cf:  engine_util.CfLock,
 	}
+	log.TxnDbg("DeleteLock key=%x,", key)
 	txn.writes = append(txn.writes, storage.Modify{del})
 }
 
@@ -118,47 +121,6 @@ func (txn *MvccTxn) GetValue(key []byte) ([]byte, error) {
 	//2-find the value by write.StartTS;
 	return txn.Reader.GetCF(engine_util.CfDefault, EncodeKey(key, write.StartTS))
 }
-func (txn *MvccTxn) GetValue_1(key []byte) ([]byte, error) {
-	// Your Code Here (4A).
-	itr := txn.Reader.IterCF(engine_util.CfDefault)
-	defer itr.Close()
-	itr.Seek(EncodeKey(key, txn.StartTS))
-	if !itr.Valid() {
-		return nil, nil
-	}
-	ts := decodeTimestamp(itr.Item().Key())
-	write, wts, err := txn.CurrentWrite(key)
-	if err != nil {
-		return nil, nil
-	}
-	if write == nil {
-		//not found the write.说明还没write.
-		return nil, nil
-	}
-	if false == (txn.StartTS >= wts) {
-		log.Fatalf("GetValue(%x) ts=%d;wts=%d", key, ts, wts)
-	}
-	if write.StartTS != ts {
-		//说明不是同一个.理论上来说，write.StartTS 早与ts(还没write）.
-		if false == (write.StartTS < wts) {
-			log.Fatalf("GetValue(%x) ts=%d;write.StartTS=%d;txn.ts=%d", key, ts, write.StartTS, txn.StartTS)
-		} else {
-			log.Warnf("GetValue(%x) ts=%d;write.StartTS=%d;txn.ts=%d", key, ts, write.StartTS, txn.StartTS)
-		}
-		return nil, nil
-	}
-	//check write;
-	switch write.Kind {
-	case WriteKindPut:
-		itr.Item().Value()
-	case WriteKindDelete, WriteKindRollback:
-		log.Fatalf("GetValue(%x) was '%v'", key, write.Kind)
-		return nil, nil
-	default:
-		log.Fatalf("GetValue(%x) unknown kind(%v)", key, write.Kind)
-	}
-	return nil, nil
-}
 
 // PutValue adds a key/value write to this transaction.
 func (txn *MvccTxn) PutValue(key []byte, value []byte) {
@@ -168,6 +130,7 @@ func (txn *MvccTxn) PutValue(key []byte, value []byte) {
 		Value: value,
 		Cf:    engine_util.CfDefault,
 	}
+	log.TxnDbg("PutValue key=%x,value=%x", put.Key, put.Value)
 	txn.writes = append(txn.writes, storage.Modify{put})
 }
 
@@ -178,6 +141,7 @@ func (txn *MvccTxn) DeleteValue(key []byte) {
 		Key: EncodeKey(key, txn.StartTS),
 		Cf:  engine_util.CfDefault,
 	}
+	log.TxnDbg("DeleteValue key=%x,", key)
 	txn.writes = append(txn.writes, storage.Modify{del})
 }
 

@@ -315,6 +315,8 @@ const (
 	//
 	PT_testlog = 0x5
 	//
+	PT_test_txn = 0x6
+	//
 	PT_test_raftStore = 0x100
 )
 
@@ -328,6 +330,8 @@ func (pt PkgType) String() string {
 		return "<raft storage>"
 	case PT_test_raftStore:
 		return "<test raft-store>"
+	case PT_test_txn:
+		return "<test txn>"
 	case PT_testlog:
 		return "<test>"
 	case PT_none:
@@ -343,7 +347,11 @@ func AddPkgType(pkg PkgType) {
 }
 
 func init() {
-	//AddPkgType(PT_raft)
+	AddPkgType(PT_test_txn)
+}
+
+func TxnDbg(format string, v ...interface{}) {
+	PkgDebugf(PT_test_txn, 4, format, v...)
 }
 
 //this dep = 5;
