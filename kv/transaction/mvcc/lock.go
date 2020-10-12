@@ -96,3 +96,31 @@ func AllLocksForTxn(txn *MvccTxn) ([]KlPair, error) {
 	}
 	return result, nil
 }
+
+func AllLocks(txn *MvccTxn, startTs, endTs uint64) ([]KlPair, error) {
+	var result []KlPair
+	iter := txn.Reader.IterCF(engine_util.CfLock)
+	defer iter.Close()
+
+	for ; iter.Valid(); iter.Next() {
+		item := iter.Item()
+		val, err := item.Value()
+		if err != nil {
+			return nil, err
+		}
+		lock, err := ParseLock(val)
+		if err != nil {
+			return nil, err
+		}
+		if lock.Ts >= startTs &&
+			lock.Ts <= endTs {
+			result = append(result, KlPair{item.Key(), lock})
+		}
+	}
+	return result, nil
+}
+
+func (lock *Lock) IsExpired(nextTs uint64) bool {
+	next := PhysicalTime(nextTs)
+	return next > (PhysicalTime(lock.Ts) + lock.Ttl)
+}

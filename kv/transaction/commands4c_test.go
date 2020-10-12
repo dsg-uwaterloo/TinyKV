@@ -21,6 +21,8 @@ func TestEmptyRollback4C(t *testing.T) {
 }
 
 // TestRollback4C tests a successful rollback.
+//- delete `CfDefault/CfLock`
+//- write `CfWrite`
 func TestRollback4C(t *testing.T) {
 	builder := newBuilder(t)
 	cmd := builder.rollbackRequest([]byte{3})
@@ -43,6 +45,7 @@ func TestRollback4C(t *testing.T) {
 // TestRollbackDuplicateKeys4C tests a rollback which rolls back multiple keys, including one duplicated key.
 func TestRollbackDuplicateKeys4C(t *testing.T) {
 	builder := newBuilder(t)
+	//duplicated key
 	cmd := builder.rollbackRequest([]byte{3}, []byte{15}, []byte{3})
 
 	builder.init([]kv{
@@ -115,6 +118,7 @@ func TestRollbackDuplicate4C(t *testing.T) {
 }
 
 // TestRollbackOtherTxn4C tests trying to roll back the wrong transaction.
+// 这种情况，类似于`TestRollbackMissingPrewrite4C`：即没有找到对应的txn ，所以啥都不做，仅仅write.
 func TestRollbackOtherTxn4C(t *testing.T) {
 	builder := newBuilder(t)
 	cmd := builder.rollbackRequest([]byte{3})
@@ -434,6 +438,7 @@ func builderForScan(t *testing.T) *testBuilder {
 		{engine_util.CfWrite, []byte{1}, 99, []byte{1, 0, 0, 0, 0, 0, 0, 0, 80}},
 		{engine_util.CfDefault, []byte{1, 23}, 80, []byte{55}},
 		{engine_util.CfWrite, []byte{1, 23}, 99, []byte{1, 0, 0, 0, 0, 0, 0, 0, 80}},
+
 		{engine_util.CfDefault, []byte{3}, 80, []byte{51}},
 		{engine_util.CfWrite, []byte{3}, 99, []byte{1, 0, 0, 0, 0, 0, 0, 0, 80}},
 		{engine_util.CfDefault, []byte{3, 45}, 80, []byte{56}},
@@ -444,10 +449,13 @@ func builderForScan(t *testing.T) *testBuilder {
 		{engine_util.CfWrite, []byte{3, 47}, 99, []byte{1, 0, 0, 0, 0, 0, 0, 0, 80}},
 		{engine_util.CfDefault, []byte{3, 48}, 80, []byte{59}},
 		{engine_util.CfWrite, []byte{3, 48}, 99, []byte{1, 0, 0, 0, 0, 0, 0, 0, 80}},
+
 		{engine_util.CfDefault, []byte{4}, 80, []byte{52}},
 		{engine_util.CfWrite, []byte{4}, 99, []byte{1, 0, 0, 0, 0, 0, 0, 0, 80}},
+
 		{engine_util.CfDefault, []byte{120}, 80, []byte{53}},
 		{engine_util.CfWrite, []byte{120}, 99, []byte{1, 0, 0, 0, 0, 0, 0, 0, 80}},
+
 		{engine_util.CfDefault, []byte{199}, 80, []byte{54}},
 		{engine_util.CfWrite, []byte{199}, 99, []byte{1, 0, 0, 0, 0, 0, 0, 0, 80}},
 

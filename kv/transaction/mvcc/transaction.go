@@ -9,6 +9,7 @@ import (
 	"github.com/pingcap-incubator/tinykv/log"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/kvrpcpb"
 	"github.com/pingcap-incubator/tinykv/scheduler/pkg/tsoutil"
+	"math"
 )
 
 // KeyError is a wrapper type so we can implement the `error` interface.
@@ -101,9 +102,9 @@ func (txn *MvccTxn) GetValue(key []byte) ([]byte, error) {
 		return nil, nil
 	}
 	item := itr.Item()
-	wts := decodeTimestamp(item.Key())
-	if false == (txn.StartTS >= wts) {
-		log.Fatalf("GetValue(%x) wts=%d;txn.ts=%d", key, wts, txn.StartTS)
+	writeVersion := decodeTimestamp(item.Key())
+	if false == (txn.StartTS >= writeVersion) {
+		log.Fatalf("GetValue(%x) writeVersion=%d;txn.ts=%d", key, writeVersion, txn.StartTS)
 	}
 	wv, err := item.Value()
 	if err != nil {
@@ -148,35 +149,39 @@ func (txn *MvccTxn) DeleteValue(key []byte) {
 // CurrentWrite searches for a write with this transaction's start timestamp. It returns a Write from the DB and that
 // write's commit timestamp, or an error.
 // 找到与 txn.timestamp 相等的write.
-//    即，从 txn.timestamp 往后遍历.
+//    即，从 txn.timestamp 往后遍历.(reader中，是dsc排序，所以要倒序遍历)
 func (txn *MvccTxn) CurrentWrite(key []byte) (*Write, uint64, error) {
 	log.Debugf("CurrentWrite(%x,%d)", key, txn.StartTS)
 	// Your Code Here (4A).
 	itr := txn.Reader.IterCF(engine_util.CfWrite)
 	defer itr.Close()
-	itr.Seek(key)
+	itr.Seek(EncodeKey(key, math.MaxUint64))
 	lastKey := EncodeKey(key, txn.StartTS)
-	lastKey = EncodeKey(key, 0)
+	//lastKey := EncodeKey(key, 0)
 	for itr.Valid() {
 		item := itr.Item()
 		switch bytes.Compare(item.Key(), lastKey) {
-		case 1: //out of range;
-			log.Errorf("%v out of range %v,%v(%d)", key, item.Key(), lastKey, txn.StartTS)
+		case 1: //out of range;not found
+			log.Warnf("%v out of range %v,%v(%d)", key, item.Key(), lastKey, txn.StartTS)
 			return nil, 0, nil
 		case 0, -1: //smaller,continue;
 			write, wts, err := writeFromItem(item)
 			if err != nil {
 				log.Warnf("CurrentWrite err:%s", err.Error())
-				continue
+				return nil, 0, err
 			} else if write != nil {
 				if write.StartTS == txn.StartTS {
-					return write, wts, err
+					return write, wts, nil
 				}
 				if write.StartTS < txn.StartTS {
 					//后面没有更小的了，可以退出了.
 					//log.Warnf("no more writes %d", write.StartTS)
 					return nil, 0, nil
 				}
+			} else {
+				//write is nil,error。
+				log.Warnf("CurrentWrite (0x%x) write is nil", key)
+				return nil, 0, nil
 			}
 			itr.Next()
 			continue
@@ -190,9 +195,26 @@ func (txn *MvccTxn) CurrentWrite(key []byte) (*Write, uint64, error) {
 // 查找最新的 Write.
 func (txn *MvccTxn) MostRecentWrite(key []byte) (*Write, uint64, error) {
 	// Your Code Here (4A).
+	log.TxnDbg("MostRecentWrite(0x%x)", key)
 	itr := txn.Reader.IterCF(engine_util.CfWrite)
 	defer itr.Close()
+	//itr.Seek(key)
 	itr.Seek(key)
+	if !itr.Valid() {
+		return nil, 0, nil
+	}
+	uk := DecodeUserKey(itr.Item().Key())
+	if !bytes.Equal(uk, key) {
+		return nil, 0, nil
+	}
+	return writeFromItem(itr.Item())
+}
+
+func (txn *MvccTxn) RecentWrite(key []byte) (*Write, uint64, error) {
+	log.TxnDbg("RecentWrite(0x%x;ver=%d)", key, txn.StartTS)
+	itr := txn.Reader.IterCF(engine_util.CfWrite)
+	defer itr.Close()
+	itr.Seek(EncodeKey(key, txn.StartTS))
 	if !itr.Valid() {
 		return nil, 0, nil
 	}
@@ -229,6 +251,14 @@ func decodeTimestamp(key []byte) uint64 {
 		panic(err)
 	}
 	return ^binary.BigEndian.Uint64(left)
+}
+
+func decodeKey(key []byte) ([]byte, uint64) {
+	left, userKey, err := codec.DecodeBytes(key)
+	if err != nil {
+		panic(err)
+	}
+	return userKey, ^binary.BigEndian.Uint64(left)
 }
 
 func writeFromItem(item engine_util.DBItem) (*Write, uint64, error) {

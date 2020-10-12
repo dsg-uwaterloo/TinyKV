@@ -245,6 +245,42 @@ func TestCurrentWrite4A(t *testing.T) {
 	assert.Equal(t, uint64(0), ts)
 }
 
+func TestRecentWrite4A(t *testing.T) {
+	//record[(40,42),(50,52)]
+	//39(nil),50(52),52(52),53(52)
+	txn := testTxn(39, twoEntries)
+	write, ts, err := txn.RecentWrite([]byte{16, 240})
+	assert.Nil(t, err)
+	assert.Nil(t, write)
+
+	txn = testTxn(50, twoEntries)
+	write, ts, err = txn.RecentWrite([]byte{16, 240})
+	assert.Nil(t, err)
+	assert.Equal(t, Write{
+		StartTS: 40,
+		Kind:    WriteKindPut,
+	}, *write)
+	assert.Equal(t, uint64(42), ts)
+
+	txn = testTxn(52, twoEntries)
+	write, ts, err = txn.RecentWrite([]byte{16, 240})
+	assert.Nil(t, err)
+	assert.Equal(t, Write{
+		StartTS: 50,
+		Kind:    WriteKindPut,
+	}, *write)
+	assert.Equal(t, uint64(52), ts)
+
+	txn = testTxn(53, twoEntries)
+	write, ts, err = txn.RecentWrite([]byte{16, 240})
+	assert.Nil(t, err)
+	assert.Equal(t, Write{
+		StartTS: 50,
+		Kind:    WriteKindPut,
+	}, *write)
+	assert.Equal(t, uint64(52), ts)
+}
+
 func TestMostRecentWrite4A(t *testing.T) {
 	// Empty DB.
 	txn := testTxn(50, nil)
