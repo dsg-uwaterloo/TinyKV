@@ -159,7 +159,7 @@ type Raft struct {
 	// value.
 	// (Used in 3A conf change)
 	PendingConfIndex uint64
-	pendingConf      *pb.ConfChange
+	//pendingConf      *pb.ConfChange
 	//
 	tag string
 }
@@ -460,7 +460,7 @@ func (r *Raft) addNode(id uint64) {
 	r.send(id, &req)
 	log.Infof(`%s : node-%d add ok.`, r.tag, id)
 	r.PendingConfIndex = 0
-	r.pendingConf = nil
+	//r.pendingConf = nil
 }
 
 // removeNode remove a node from raft group
@@ -478,7 +478,7 @@ func (r *Raft) removeNode(id uint64) {
 		r.updatePrCommits()
 	}
 	r.PendingConfIndex = 0
-	r.pendingConf = nil
+	//r.pendingConf = nil
 }
 
 //other help functions;
@@ -610,11 +610,26 @@ func (r *Raft) handlePropose(m pb.Message) {
 	debugf("'%d->%d'%v(ents=%d)", r.id, m.GetTo(), m.GetMsgType(), len(m.GetEntries()))
 	//append logs;
 	//NOTICE-3B:check-防止一个过程中有多个节点变化.
+	var cnt int
+	var ec *pb.Entry
 	for _, e := range m.GetEntries() {
-		if e.EntryType == pb.EntryType_EntryConfChange && r.PendingConfIndex != 0 {
-			log.Errorf("%s was confChange ing....", r.tag)
-			return
+		if e.EntryType == pb.EntryType_EntryConfChange {
+			if r.PendingConfIndex != 0 { //保证之前没有过；
+				log.Errorf("%s was confChange ing....", r.tag)
+				return
+			} else {
+				//保证这次中只有一个.
+				if cnt > 0 {
+					log.Errorf("%s was confChange ing2....", r.tag)
+					return
+				}
+				cnt++
+				ec = e
+			}
 		}
+	}
+	if ec != nil {
+		r.PendingConfIndex = ec.Index
 	}
 	rlog := r.RaftLog
 	lastIndex := rlog.LastIndex()

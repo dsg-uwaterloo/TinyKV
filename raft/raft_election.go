@@ -42,7 +42,7 @@ func (r *Raft) doVote(to, curTerm, reqTerm uint64, voteGrant bool) {
 	var rsp = &RspVote{
 		Term:        curTerm,
 		VoteGranted: voteGrant,
-		ReqTerm:     reqTerm,
+		//ReqTerm:     reqTerm,
 	}
 	if voteGrant {
 		log.Debugf("%s vote %d-> %d for term(%d->%d)", r.tag, r.Vote, to, curTerm, r.Term)
@@ -63,7 +63,7 @@ func (r *Raft) onVote(m pb.Message) {
 	var rsp RspVote
 	rsp.fromPbMsg(m)
 
-	debugf("onVote '%d->%d'(%v):%v", m.GetFrom(), m.GetTo(), m.GetMsgType(), rsp)
+	debugf("%s onVote '%d->%d'(%v):%v", r.tag, m.GetFrom(), m.GetTo(), m.GetMsgType(), rsp)
 	//如果接收到的 RPC 请求或响应中，任期号T > currentTerm，那么就令 currentTerm 等于 T，并切换状态为跟随者（5.1 节）
 	if rsp.Term > curTerm {
 		r.becomeFollower(rsp.Term, 0)
@@ -77,10 +77,10 @@ func (r *Raft) onVote(m pb.Message) {
 	//log.Infof("%s onVote '%d->%d'(%v):%v", r.tag, m.GetFrom(), m.GetTo(), m.GetMsgType(), rsp)
 	//NOTICE-raft:如果不是本次Term，那么直接就drop，防止之前的vote消息有干扰.
 	// 		这个是因为系统处理太慢导致的.
-	if rsp.ReqTerm != r.Term {
-		log.Warnf("%s Term(%d) resp.reqTerm(%d) err:message is too slow", r.tag, r.Term, rsp.ReqTerm)
-		return
-	}
+	//if rsp.ReqTerm != r.Term && rsp.ReqTerm != 0 {
+	//	log.Warnf("%s Term(%d) resp.reqTerm(%d) err:message is too slow", r.tag, r.Term, rsp.ReqTerm)
+	//	return
+	//}
 	if false == rsp.VoteGranted {
 		//可能已经投票给其它人了
 		r.votes[m.GetFrom()] = false
@@ -181,14 +181,24 @@ func (r *Raft) voteCount() int {
 			voteCnt++
 		}
 	}
-	if r.pendingConf != nil {
-		switch r.pendingConf.ChangeType {
+	if r.PendingConfIndex <= 0 {
+		return voteCnt
+	}
+	//
+	pos, err := r.RaftLog.pos(r.PendingConfIndex)
+	if err != nil {
+		log.Warnf("%s r.PendingConfIndex(%d) err:%s", r.tag, r.PendingConfIndex, err.Error())
+		return voteCnt
+	}
+	conf := fromEntry(&r.RaftLog.entries[pos])
+	if conf != nil {
+		switch conf.ChangeType {
 		case pb.ConfChangeType_AddNode:
 			voteCnt++
 		case pb.ConfChangeType_RemoveNode:
 			voteCnt--
 		default:
-			log.Errorf("unknown ConfChange type:%v", r.pendingConf.GetChangeType())
+			log.Errorf("unknown ConfChange type:%v", conf.GetChangeType())
 		}
 	}
 	return voteCnt

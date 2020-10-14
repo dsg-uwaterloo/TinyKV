@@ -21,10 +21,10 @@ func (r *Raft) onHeartbeatsFailed(to uint64, resp *RspHeartbeat, doAgain func(to
 		return
 	}
 	//NOTICE-raft:如果不是本轮次到，直接忽略.
-	if pr.Match != resp.reqPrevLogIndex {
-		log.Warnf("%s pr(%d):not this round message=%+v", r.tag, pr.Match, resp)
-		return
-	}
+	//if pr.Match != resp.reqPrevLogIndex {
+	//	log.Warnf("%s pr(%d):not this round message=%+v", r.tag, pr.Match, resp)
+	//	return
+	//}
 	pr.Match--
 	pr.Next = pr.Match + 1
 	doAgain(to)
@@ -34,8 +34,8 @@ func (r *Raft) processHeartBeatRequest(req *ReqHeartbeat, resp *RspHeartbeat, fr
 	curTerm := r.Term
 	resp.Term = curTerm
 	resp.Success = false
-	resp.reqPrevLogIndex = req.PrevLogIndex
-	resp.reqPrevLogTerm = req.PrevLogTerm
+	//resp.reqPrevLogIndex = req.PrevLogIndex
+	//resp.reqPrevLogTerm = req.PrevLogTerm
 	//0. check args; 可能leader还没commit（没有大多数人收到日志，所以只能不commit，所以commit说可能小于prevLogIndex都。
 	//if req.LeaderCommitId < req.PrevLogIndex {
 	//	log.Errorf("req arg error commit(%d)<prevIndex(%d)", req.LeaderCommitId, req.PrevLogIndex)

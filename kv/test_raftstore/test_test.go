@@ -268,6 +268,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 		atomic.StoreInt32(&done_clients, 0)
 		atomic.StoreInt32(&done_partitioner, 0)
 		go SpawnClientsAndWait(t, ch_clients, nclients, func(cli int, t *testing.T) {
+			log.TestLog("%s cli-%d running...", tag, cli)
 			j := 0
 			defer func() {
 				clnts[cli] <- j
@@ -319,6 +320,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			go confchanger(t, cluster, ch_confchange, &done_confchanger)
 		}
 
+		time.Sleep(5 * time.Second)
 		atomic.StoreInt32(&done_clients, 1)     // tell clients to quit
 		atomic.StoreInt32(&done_partitioner, 1) // tell partitioner to quit
 		atomic.StoreInt32(&done_confchanger, 1) // tell confchanger to quit
