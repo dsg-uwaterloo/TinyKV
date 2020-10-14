@@ -34,7 +34,7 @@ func (rv *ReqVote) fromPbMsg(m pb.Message) {
 type RspVote struct {
 	Term        uint64 `json:"term"`        //当前任期号，以便于候选人去更新自己的任期号
 	VoteGranted bool   `json:"voteGranted"` //候选人赢得了此张选票时为真
-	ReqTerm     uint64 `json:"req_term"`    //NOTICE-raft:请求消息对应都term,leader处理响应消息都时候，会判断下是否是最新都term请求都voteReq；否则直接丢弃.
+	//ReqTerm     uint64 `json:"req_term"`    //NOTICE-raft:请求消息对应都term,leader处理响应消息都时候，会判断下是否是最新都term请求都voteReq；否则直接丢弃.
 }
 
 func (rv *RspVote) toPbMsg() pb.Message {
@@ -42,14 +42,14 @@ func (rv *RspVote) toPbMsg() pb.Message {
 		MsgType: pb.MessageType_MsgRequestVoteResponse,
 		Term:    rv.Term,
 		Reject:  !rv.VoteGranted,
-		LogTerm: rv.ReqTerm,
+		//LogTerm: rv.ReqTerm,
 	}
 }
 
 func (rv *RspVote) fromPbMsg(m pb.Message) {
 	rv.Term = m.GetTerm()
 	rv.VoteGranted = !m.GetReject()
-	rv.ReqTerm = m.GetLogTerm()
+	//rv.ReqTerm = m.GetLogTerm()
 }
 
 type ReqHeartbeat struct {
@@ -81,8 +81,8 @@ type RspHeartbeat struct {
 	Term    uint64 `json:"term"`
 	Success bool   `json:"succ"`
 	//NOTICE-raft:如果失败（RspHeartbeat.Sucess==false），那么就填充req相关数据；如果成功，则忽略该值;
-	reqPrevLogIndex uint64 `json:"req_prev_log_index"`
-	reqPrevLogTerm  uint64 `json:"req_prev_log_term"`
+	//reqPrevLogIndex uint64 `json:"req_prev_log_index"`
+	//reqPrevLogTerm  uint64 `json:"req_prev_log_term"`
 }
 
 func (rv *RspHeartbeat) toPbMsg() pb.Message {
@@ -91,10 +91,10 @@ func (rv *RspHeartbeat) toPbMsg() pb.Message {
 		Term:    rv.Term,
 		Reject:  !rv.Success,
 	}
-	if false == rv.Success {
-		m.Index = rv.reqPrevLogIndex
-		m.LogTerm = rv.reqPrevLogTerm
-	}
+	//if false == rv.Success {
+	//	m.Index = rv.reqPrevLogIndex
+	//	m.LogTerm = rv.reqPrevLogTerm
+	//}
 	return m
 }
 
@@ -102,10 +102,10 @@ func (rv *RspHeartbeat) fromPbMsg(m pb.Message) {
 	rv.Term = m.GetTerm()
 	rv.Success = !m.GetReject()
 	//
-	if false == rv.Success {
-		rv.reqPrevLogIndex = m.GetIndex()
-		rv.reqPrevLogTerm = m.GetLogTerm()
-	}
+	//if false == rv.Success {
+	//	rv.reqPrevLogIndex = m.GetIndex()
+	//	rv.reqPrevLogTerm = m.GetLogTerm()
+	//}
 }
 
 type ReqAppend struct {
