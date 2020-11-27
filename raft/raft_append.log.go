@@ -16,8 +16,8 @@ func (r *Raft) onHeartbeatsFailed(to uint64, resp *RspHeartbeat, doAgain func(to
 	}
 	//reset mach;
 	pr := r.Prs[to]
-	if pr.Match == 0 {
-		log.Fatalf("%s peer(%d)(term=%d)mach is zero.logic error.%+v;%s", r.tag, to, r.Term, resp, r.prs2string())
+	if pr.Match < 0 {
+		log.Errorf("%s peer(%d)(term=%d)mach is zero.logic error.%+v;%s", r.tag, to, r.Term, resp, r.prs2string())
 		return
 	}
 	//NOTICE-raft:如果不是本轮次到，直接忽略.
