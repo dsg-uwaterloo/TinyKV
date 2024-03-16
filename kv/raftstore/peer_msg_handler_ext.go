@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"sort"
+	"sync/atomic"
+
 	"github.com/gogo/protobuf/sortkeys"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/message"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/meta"
@@ -13,8 +16,6 @@ import (
 	"github.com/pingcap-incubator/tinykv/proto/pkg/metapb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_cmdpb"
 	"github.com/pingcap-incubator/tinykv/raft"
-	"sort"
-	"sync/atomic"
 
 	"github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	rspb "github.com/pingcap-incubator/tinykv/proto/pkg/raft_serverpb"
@@ -82,9 +83,10 @@ func (rmw *RaftMsgWrapper) Unmarshal(buf []byte) error {
 	return nil
 }
 
-//NOTICE-3B:这里本质上来说，只需要一个peer进行序列化就可以来，因为add只需要这个peer都store信息。
-//  但是，这里加过index说为来记录下，看看一个confChange要执行几次。
-//  另外，confChange是有可能执行多次的——因为需要raft共识，导致region对比异常，则需要再次来添加、删除节点.
+// NOTICE-3B:这里本质上来说，只需要一个peer进行序列化就可以来，因为add只需要这个peer都store信息。
+//
+//	但是，这里加过index说为来记录下，看看一个confChange要执行几次。
+//	另外，confChange是有可能执行多次的——因为需要raft共识，导致region对比异常，则需要再次来添加、删除节点.
 type ConfChange struct {
 	*metapb.Peer
 	Index uint64
@@ -157,6 +159,18 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	//d.saveRaftLog(&rd)
 	util.RSDebugf("%s HandleRaftReady", d.peer.Tag)
 	rd := raftGroup.Ready()
+
+	if len(rd.Entries) > 0 {
+		// log.Infof("Number of Entries is: %d", len(rd.Entries))
+		for idx := 0; idx < len(rd.Entries); idx++ {
+
+			ent := &rd.Entries[idx]
+
+			d.processEntry(ent)
+
+		}
+	}
+
 	_, err := d.peerStorage.SaveReadyState(&rd)
 	if err != nil {
 		panic(err)
@@ -711,11 +725,12 @@ func (d *peerMsgHandler) updateConfChange(cc *eraftpb.ConfChange) {
 	}
 }
 
-//--------
-//NOTICE-3B-split:
-//  1、先创建new-region（peer设置好，但是没有keys）.
-//  2、根据peer来创建peer.
-//  3、分割keys: new/old region split keys
+// --------
+// NOTICE-3B-split:
+//
+//	1、先创建new-region（peer设置好，但是没有keys）.
+//	2、根据peer来创建peer.
+//	3、分割keys: new/old region split keys
 func checkSplitKey(split, start, end []byte) bool {
 	//需要start < split < end ，否则split没有意义.
 	ret1 := false //start < split;

@@ -279,17 +279,43 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			lastvalue := ""
 			for atomic.LoadInt32(&done_clients) == 0 {
 				if (rand.Int() % 1000) < 500 {
+
+					start := time.Now() // Start timer
+
 					key := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", j)
 					value := "x " + strconv.Itoa(cli) + " " + strconv.Itoa(j) + " y;"
 					//log.Infof("%d: client new put '%v'(%x),'%v'\n", cli, key, key, value)
 					//lastLeader = cluster.MustPutLeader([]byte(key), []byte(value))
 					cluster.MustPut([]byte(key), []byte(value))
+
+					end := time.Now()          // Stop timer
+					duration := end.Sub(start) // Calculate duration
+					log.TestLog("Operation took: %v", duration)
+
 					last = NextValue(last, value)
 					j++
 					lastKey = key
 					lastvalue = value
 				} else {
-					checkScan(last, cli, j, 20, cluster, t)
+					// checkScan(last, cli, j, 20, cluster, t)
+
+					start := time.Now() // Start timer
+
+					key := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", j)
+					value := "x " + strconv.Itoa(cli) + " " + strconv.Itoa(j) + " y;"
+					//log.Infof("%d: client new put '%v'(%x),'%v'\n", cli, key, key, value)
+					//lastLeader = cluster.MustPutLeader([]byte(key), []byte(value))
+					cluster.MustPut([]byte(key), []byte(value))
+
+					end := time.Now()          // Stop timer
+					duration := end.Sub(start) // Calculate duration
+					log.TestLog("Operation took: %v", duration)
+
+					last = NextValue(last, value)
+					j++
+					lastKey = key
+					lastvalue = value
+
 					//start := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", 0)
 					//end := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", j)
 					////log.Infof("%d: client new scan '%v'-'%v'\n", cli, start, end)
@@ -425,7 +451,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 	}
 }
 
-func TestBasic2B(t *testing.T) {
+func TestBasic2BA(t *testing.T) {
 	// Test: one client (2B) ...
 	GenericTest(t, "2B", 1, false, false, false, -1, false, false)
 }

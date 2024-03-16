@@ -69,6 +69,9 @@ project2ab:
 project2ac:
 	$(GOTEST) ./raft -run 2AC
 
+project2ba:
+	$(GOTEST) ./kv/test_raftstore -run 2BA
+
 project2b:
 	$(GOTEST) ./kv/test_raftstore -run 2B
 
